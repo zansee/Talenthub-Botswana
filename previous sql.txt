@@ -1,0 +1,2781 @@
+CREATE TABLE IF NOT EXISTS public.employer_audit_logs (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  company_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE, -- Company owner ID
+  user_id uuid REFERENCES public.profiles(id) ON DELETE SET NULL, -- Actor ID
+  action_type text NOT NULL, -- 'job_posted', 'status_changed', 'member_invited', 'member_removed'
+  description text NOT NULL,
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+-- Restore B2B jobs (which have no external contact email/address) to be internal
+UPDATE public.jobs
+SET application_type = 'internal'
+WHERE application_email IS NULL OR TRIM(application_email) = '';
+
+UPDATE public.jobs
+SET application_type = 'external'
+WHERE application_type = 'internal' OR application_type IS NULL;
+
+-- Update all existing job postings to be external, so they route through email/physical submission package generator rather than direct in-app submission.
+UPDATE public.jobs
+SET application_type = 'external'
+WHERE application_type = 'internal' OR application_type IS NULL;
+
+-- =========================================================================
+-- BREAK COMPILE-TIME CIRCULAR DEPENDENCIES
+-- =========================================================================
+
+-- 1. Create a safe, RLS-bypassing check for applicant-employer relationships
+CREATE OR REPLACE FUNCTION public.check_is_employer_of_applicant(applicant_id uuid, employer_id uuid)
+RETURNS boolean SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.applications a
+    JOIN public.jobs j ON a.job_id = j.id
+    WHERE a.user_id = applicant_id
+    AND j.posted_by = employer_id
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+-- 2. Update the "Employers view applicant profiles" policy on profiles to use the safe check
+DROP POLICY IF EXISTS "Employers view applicant profiles" ON public.profiles;
+CREATE POLICY "Employers view applicant profiles" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (
+    public.check_is_employer_of_applicant(id, auth.uid())
+  );
+
+-- 3. Replace direct profile checks on jobs with the safe PL/pgSQL helper
+DROP POLICY IF EXISTS "Employers can insert jobs" ON public.jobs;
+DROP POLICY IF EXISTS "Employers can update own jobs" ON public.jobs;
+DROP POLICY IF EXISTS "Employers can delete own jobs" ON public.jobs;
+
+CREATE POLICY "Employers can insert jobs" ON public.jobs
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    auth.uid() = posted_by AND 
+    public.is_employer_or_team(auth.uid())
+  );
+
+CREATE POLICY "Employers can update own jobs" ON public.jobs
+  FOR UPDATE TO authenticated
+  USING (
+    auth.uid() = posted_by AND 
+    public.is_employer_or_team(auth.uid())
+  );
+
+CREATE POLICY "Employers can delete own jobs" ON public.jobs
+  FOR DELETE TO authenticated
+  USING (
+    auth.uid() = posted_by AND 
+    public.is_employer_or_team(auth.uid())
+  );
+
+SELECT trigger_name, event_manipulation, action_statement, action_orientation
+FROM information_schema.triggers
+WHERE event_object_table = 'jobs';
+
+
+SELECT policyname, cmd, qual, with_check 
+FROM pg_policies 
+WHERE tablename = 'jobs';
+
+-- =========================================================================
+-- ULTIMATE MASTER PL/pgSQL CONVERSION SCRIPT
+-- =========================================================================
+
+-- 1. Re-implement can_i_see_member_row in PL/pgSQL
+CREATE OR REPLACE FUNCTION public.can_i_see_member_row(row_employer_id uuid, row_user_id uuid)
+RETURNS boolean SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN (
+    auth.uid() = row_user_id OR
+    auth.uid() = row_employer_id OR
+    EXISTS (
+      SELECT 1 FROM public.company_members 
+      WHERE user_id = auth.uid() AND employer_id = row_employer_id
+    )
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+-- 2. Re-implement get_my_colleague_ids in PL/pgSQL
+CREATE OR REPLACE FUNCTION public.get_my_colleague_ids()
+RETURNS TABLE (uid uuid) SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN QUERY 
+  SELECT user_id FROM public.company_members
+  WHERE employer_id IN (SELECT eid FROM public.get_my_employer_ids());
+END;
+$$ LANGUAGE plpgsql;
+
+-- 3. Re-implement get_my_company_id in PL/pgSQL
+CREATE OR REPLACE FUNCTION public.get_my_company_id()
+RETURNS uuid SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+  retval uuid;
+BEGIN
+  SELECT employer_id INTO retval FROM public.company_members 
+  WHERE user_id = auth.uid() 
+  LIMIT 1;
+  RETURN retval;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 4. Re-implement is_on_my_team in PL/pgSQL
+CREATE OR REPLACE FUNCTION public.is_on_my_team(target_user_id uuid)
+RETURNS boolean SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN (
+    EXISTS (
+      -- 1. Check if we share the same employer
+      SELECT 1 FROM public.company_members me
+      JOIN public.company_members them ON me.employer_id = them.employer_id
+      WHERE me.user_id = auth.uid() AND them.user_id = target_user_id
+    ) OR EXISTS (
+      -- 2. Check if the target is MY employer (I am their team member)
+      SELECT 1 FROM public.company_members
+      WHERE user_id = auth.uid() AND employer_id = target_user_id
+    ) OR EXISTS (
+      -- 3. Check if the target is MY team member (I am the employer)
+      SELECT 1 FROM public.company_members
+      WHERE employer_id = auth.uid() AND user_id = target_user_id
+    ) OR auth.uid() = target_user_id
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT proname AS function_name, line_num, line
+FROM (
+  SELECT 
+    proname, 
+    row_number() OVER (PARTITION BY proname) AS line_num, 
+    unnest(string_to_array(prosrc, chr(10))) AS line
+  FROM pg_proc 
+  WHERE proname IN ('get_my_colleague_ids', 'get_my_company_id', 'can_i_see_member_row', 'is_on_my_team')
+) q
+ORDER BY proname, line_num;
+
+SELECT proname AS name, prosrc AS source_code
+FROM pg_proc 
+WHERE proname IN ('get_my_colleague_ids', 'get_my_company_id', 'can_i_see_member_row', 'is_on_my_team');
+
+SELECT 
+    p.proname AS name, 
+    pg_get_function_arguments(p.oid) AS arguments, 
+    pg_get_functiondef(p.oid) AS definition
+FROM pg_proc p
+JOIN pg_namespace n ON p.pronamespace = n.oid
+WHERE n.nspname = 'public'
+AND p.proname IN ('get_my_colleague_ids', 'get_my_company_id', 'can_i_see_member_row', 'is_on_my_team');
+
+
+
+SELECT 
+    p.proname AS name, 
+    pg_get_function_arguments(p.oid) AS arguments, 
+    pg_get_functiondef(p.oid) AS definition
+FROM pg_proc p
+JOIN pg_namespace n ON p.pronamespace = n.oid
+WHERE n.nspname = 'public'
+AND p.proname IN ('get_my_colleague_ids', 'get_my_company_id', 'can_i_see_member_row', 'is_on_my_team');
+
+-- =========================================================================
+-- ALL-IN-ONE MASTER PL/pgSQL CONVERSION SCRIPT
+-- =========================================================================
+
+-- 1. Re-implement is_employer_or_team in PL/pgSQL
+CREATE OR REPLACE FUNCTION public.is_employer_or_team(check_user_id uuid)
+RETURNS boolean SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.profiles 
+    WHERE id = check_user_id 
+    AND account_type IN ('employer', 'team_member', 'job_poster', 'admin')
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+-- 2. Re-implement get_auth_account_type in PL/pgSQL
+CREATE OR REPLACE FUNCTION public.get_auth_account_type()
+RETURNS text SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+  retval text;
+BEGIN
+  SELECT account_type INTO retval FROM public.profiles WHERE id = auth.uid();
+  RETURN retval;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 3. Re-implement get_my_employer_ids in PL/pgSQL
+CREATE OR REPLACE FUNCTION public.get_my_employer_ids()
+RETURNS TABLE (eid uuid) SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN QUERY 
+  SELECT employer_id FROM public.company_members WHERE user_id = auth.uid();
+END;
+$$ LANGUAGE plpgsql;
+
+-- 4. Re-implement get_my_account_type in PL/pgSQL
+CREATE OR REPLACE FUNCTION public.get_my_account_type()
+RETURNS text SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+  retval text;
+BEGIN
+  SELECT account_type INTO retval FROM public.profiles WHERE id = auth.uid();
+  RETURN retval;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Fix Postgres RLS recursion by converting LANGUAGE sql functions to LANGUAGE plpgsql.
+-- This stops the query planner from inlining them, ensuring they execute in a true SECURITY DEFINER bypass context.
+
+-- 1. Re-implement is_employer_or_team in PL/pgSQL
+CREATE OR REPLACE FUNCTION public.is_employer_or_team(check_user_id uuid)
+RETURNS boolean SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.profiles 
+    WHERE id = check_user_id 
+    AND account_type IN ('employer', 'team_member', 'job_poster', 'admin')
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+-- 2. Re-implement get_auth_account_type in PL/pgSQL
+CREATE OR REPLACE FUNCTION public.get_auth_account_type()
+RETURNS text SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+  retval text;
+BEGIN
+  SELECT account_type INTO retval FROM public.profiles WHERE id = auth.uid();
+  RETURN retval;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 3. Re-implement get_my_employer_ids in PL/pgSQL
+CREATE OR REPLACE FUNCTION public.get_my_employer_ids()
+RETURNS TABLE (eid uuid) SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN QUERY 
+  SELECT employer_id FROM public.company_members WHERE user_id = auth.uid();
+END;
+$$ LANGUAGE plpgsql;
+
+-- 1. Drop the recursive insert policies on notifications
+DROP POLICY IF EXISTS "System can insert notifications" ON public.notifications;
+DROP POLICY IF EXISTS "Employers insert notifications" ON public.notifications;
+DROP POLICY IF EXISTS "Allow authenticated insert" ON public.notifications;
+
+-- 2. Create the simplified, lightning-fast insert policy
+CREATE POLICY "Allow authenticated insert" ON public.notifications
+  FOR INSERT TO authenticated WITH CHECK (true);
+
+-- Fix Postgres RLS recursion by standardizing user_roles select policy.
+-- Since roles are not sensitive and do not contain passwords/secrets, allowing authenticated read access
+-- entirely avoids the recursive loop when checking auth.uid() has_role('admin') in other table policies.
+
+-- 1. Drop existing problematic policies on user_roles
+DROP POLICY IF EXISTS "Users see own roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Admins see all roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Allow authenticated read" ON public.user_roles;
+
+-- 2. Create the non-recursive, simple SELECT policy
+CREATE POLICY "Allow authenticated read" ON public.user_roles
+  FOR SELECT TO authenticated USING (true);
+
+-- Fix Postgres RLS recursion by standardizing user_roles select policy.
+-- Since roles are not sensitive and do not contain passwords/secrets, allowing authenticated read access
+-- entirely avoids the recursive loop when checking auth.uid() has_role('admin') in other table policies.
+
+-- 1. Drop existing problematic policies on user_roles
+DROP POLICY IF EXISTS "Users see own roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Admins see all roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Allow authenticated read" ON public.user_roles;
+
+-- 2. Create the non-recursive, simple SELECT policy
+CREATE POLICY "Allow authenticated read" ON public.user_roles
+  FOR SELECT TO authenticated USING (true);
+
+-- Fix Postgres RLS recursion by standardizing user_roles select policy.
+-- Since roles are not sensitive and do not contain passwords/secrets, allowing authenticated read access
+-- entirely avoids the recursive loop when checking auth.uid() has_role('admin') in other table policies.
+
+-- 1. Drop existing problematic policies on user_roles
+DROP POLICY IF EXISTS "Users see own roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Admins see all roles" ON public.user_roles;
+
+-- 2. Create the non-recursive, simple SELECT policy
+CREATE POLICY "Allow authenticated read" ON public.user_roles
+  FOR SELECT TO authenticated USING (true);
+
+CREATE OR REPLACE FUNCTION public.has_role(_user_id UUID, _role app_role)
+RETURNS BOOLEAN SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.user_roles 
+    WHERE user_id = _user_id AND role = _role
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+supabase secrets set GEMINI_API_KEY="your-gemini-api-key" --project-ref aidmbhrkhtqlzaxugxck
+
+-- Fix Postgres RLS recursion by re-implementing has_role in PL/pgSQL
+-- This prevents the query planner from inlining the SQL function and breaking the SECURITY DEFINER context.
+
+CREATE OR REPLACE FUNCTION public.has_role(_user_id UUID, _role app_role)
+RETURNS BOOLEAN SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.user_roles 
+    WHERE user_id = _user_id AND role = _role
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+-- Fix Postgres RLS recursion by re-implementing has_role in PL/pgSQL
+-- This prevents the query planner from inlining the SQL function and breaking the SECURITY DEFINER context.
+
+CREATE OR REPLACE FUNCTION public.has_role(_user_id UUID, _role app_role)
+RETURNS BOOLEAN SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.user_roles 
+    WHERE user_id = _user_id AND role = _role
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+-- Fix Postgres RLS recursion by re-implementing has_role in PL/pgSQL
+-- This prevents the query planner from inlining the SQL function and breaking the SECURITY DEFINER context.
+
+CREATE OR REPLACE FUNCTION public.has_role(_user_id UUID, _role app_role)
+RETURNS BOOLEAN SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.user_roles 
+    WHERE user_id = _user_id AND role = _role
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+-- Add required_documents column to jobs table
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS required_documents text;
+
+-- Allow Admins to View All Data for the Analytics Dashboard
+-- This gives users who have the 'admin' role in user_roles complete select access.
+
+-- 1. Jobs Table admin read policy
+DROP POLICY IF EXISTS "Admins view all jobs" ON public.jobs;
+CREATE POLICY "Admins view all jobs" ON public.jobs
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role = 'admin')
+  );
+
+-- 2. Applications Table admin read policy
+DROP POLICY IF EXISTS "Admins view all applications" ON public.applications;
+CREATE POLICY "Admins view all applications" ON public.applications
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role = 'admin')
+  );
+
+-- 3. Swipes (views) Table admin read policy
+DROP POLICY IF EXISTS "Admins view all swipes" ON public.swipes;
+CREATE POLICY "Admins view all swipes" ON public.swipes
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role = 'admin')
+  );
+
+-- 4. Profiles Table admin read policy
+DROP POLICY IF EXISTS "Admins view all profiles" ON public.profiles;
+CREATE POLICY "Admins view all profiles" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role = 'admin')
+  );
+
+-- 5. Quick Jobs Table admin read policy
+DROP POLICY IF EXISTS "Admins view all quick jobs" ON public.quick_jobs;
+CREATE POLICY "Admins view all quick jobs" ON public.quick_jobs
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role = 'admin')
+  );
+
+-- 1. Allow public access to basic employer profile info for the apply page
+-- (Allows visitors to see company name/location)
+CREATE POLICY "Allow public view of basic profile info" ON public.profiles
+FOR SELECT USING (true);
+
+-- 2. Allow public access to company logos in storage
+-- (Ensures company logos appear on the public application portal)
+DROP POLICY IF EXISTS "Allow public view of logos" ON storage.objects;
+CREATE POLICY "Allow public view of logos" ON storage.objects
+FOR SELECT USING (bucket_id = 'app-docs' AND (storage.foldername(name))[1] = 'logos');
+
+-- 1. Update Jobs table with document requirements and screening questions
+ALTER TABLE public.jobs 
+ADD COLUMN IF NOT EXISTS required_documents text[] DEFAULT ARRAY['CV / Resume'],
+ADD COLUMN IF NOT EXISTS screening_questions jsonb DEFAULT '[]'::jsonb;
+
+-- 2. Update Applications table with external applicant data and scoring
+ALTER TABLE public.applications
+ADD COLUMN IF NOT EXISTS is_external boolean DEFAULT false,
+ADD COLUMN IF NOT EXISTS external_data jsonb DEFAULT NULL,
+ADD COLUMN IF NOT EXISTS screening_score integer DEFAULT NULL;
+
+-- 3. Allow anonymous submissions by dropping NOT NULL on user_id
+ALTER TABLE public.applications ALTER COLUMN user_id DROP NOT NULL;
+
+-- 4. Update RLS policies to allow public submissions (Direct Link)
+DROP POLICY IF EXISTS "Allow public external submissions" ON public.applications;
+CREATE POLICY "Allow public external submissions" ON public.applications
+FOR INSERT WITH CHECK (is_external = true OR auth.uid() IS NOT NULL);
+
+DROP POLICY IF EXISTS "Allow public job view for apply" ON public.jobs;
+CREATE POLICY "Allow public job view for apply" ON public.jobs
+FOR SELECT USING (is_active = true);
+
+-- 5. Enable storage bucket for public submissions
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('external-submissions', 'external-submissions', true)
+ON CONFLICT (id) DO NOTHING;
+
+DROP POLICY IF EXISTS "Allow public uploads to external-submissions" ON storage.objects;
+CREATE POLICY "Allow public uploads to external-submissions"
+ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'external-submissions');
+
+DROP POLICY IF EXISTS "Allow public reading from external-submissions" ON storage.objects;
+CREATE POLICY "Allow public reading from external-submissions"
+ON storage.objects FOR SELECT USING (bucket_id = 'external-submissions');
+
+-- 1. Drop the broken policy
+DROP POLICY IF EXISTS "Profiles Visibility Policy" ON public.profiles;
+DROP POLICY IF EXISTS "Final Profile View Policy" ON public.profiles;
+
+-- 2. Create a safe helper function (SECURITY DEFINER bypasses RLS)
+CREATE OR REPLACE FUNCTION public.get_auth_account_type()
+RETURNS text AS $$
+  SELECT account_type FROM public.profiles WHERE id = auth.uid();
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- 3. Create the robust policy
+CREATE POLICY "Profiles Visibility Policy" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (
+    -- You can see yourself
+    id = auth.uid()
+    OR
+    -- Employers and Team Members can see each other and candidates
+    public.get_auth_account_type() IN ('employer', 'team_member', 'job_poster')
+  );
+
+-- Restore Head Hunt visibility
+DROP POLICY IF EXISTS "Final Profile View Policy" ON public.profiles;
+
+CREATE POLICY "Profiles Visibility Policy" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (
+    -- 1. Everyone can see their own profile
+    id = auth.uid() 
+    OR 
+    -- 2. Team members and employers can see each other
+    public.is_on_my_team(id)
+    OR
+    -- 3. Employers and Team Members can see candidates for Head Hunt
+    (
+      (SELECT account_type FROM public.profiles WHERE id = auth.uid()) IN ('employer', 'team_member', 'job_poster')
+      AND 
+      account_type NOT IN ('employer', 'admin')
+    )
+  );
+
+-- Update the Master Key to include the employer/owner
+CREATE OR REPLACE FUNCTION public.is_on_my_team(target_user_id uuid)
+RETURNS boolean AS $$
+  SELECT EXISTS (
+    -- 1. Check if we share the same employer
+    SELECT 1 FROM public.company_members me
+    JOIN public.company_members them ON me.employer_id = them.employer_id
+    WHERE me.user_id = auth.uid() AND them.user_id = target_user_id
+  ) OR EXISTS (
+    -- 2. Check if the target is MY employer (I am their team member)
+    SELECT 1 FROM public.company_members 
+    WHERE user_id = auth.uid() AND employer_id = target_user_id
+  ) OR EXISTS (
+    -- 3. Check if the target is MY team member (I am the employer)
+    SELECT 1 FROM public.company_members 
+    WHERE employer_id = auth.uid() AND user_id = target_user_id
+  ) OR auth.uid() = target_user_id;
+$$ LANGUAGE sql SECURITY DEFINER;
+
+
+
+-- 1. Clear out all previous attempts to avoid conflicts
+DROP POLICY IF EXISTS "Company members can view their team" ON company_members;
+DROP POLICY IF EXISTS "Company members can view each other" ON public.profiles;
+DROP POLICY IF EXISTS "Final Team View Policy" ON company_members;
+DROP POLICY IF EXISTS "Final Profile View Policy" ON public.profiles;
+
+-- 2. Create the "Master Key" functions (Security Definer)
+-- These bypass RLS restrictions to check permissions safely
+CREATE OR REPLACE FUNCTION public.is_on_my_team(target_user_id uuid)
+RETURNS boolean AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.company_members me
+    JOIN public.company_members them ON me.employer_id = them.employer_id
+    WHERE me.user_id = auth.uid() AND them.user_id = target_user_id
+  ) OR EXISTS (
+    SELECT 1 FROM public.company_members WHERE employer_id = auth.uid() AND user_id = target_user_id
+  ) OR auth.uid() = target_user_id;
+$$ LANGUAGE sql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.can_i_see_member_row(row_employer_id uuid, row_user_id uuid)
+RETURNS boolean AS $$
+  SELECT 
+    auth.uid() = row_user_id OR 
+    auth.uid() = row_employer_id OR 
+    EXISTS (SELECT 1 FROM public.company_members WHERE user_id = auth.uid() AND employer_id = row_employer_id);
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- 3. Apply the Master Key to the policies
+CREATE POLICY "Final Team View Policy" ON company_members
+  FOR SELECT TO authenticated
+  USING (public.can_i_see_member_row(employer_id, user_id));
+
+CREATE POLICY "Final Profile View Policy" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (public.is_on_my_team(id));
+
+-- 1. Drop existing policies to start fresh
+DROP POLICY IF EXISTS "Team members can see their team" ON company_members;
+DROP POLICY IF EXISTS "Company members can view colleagues" ON public.profiles;
+DROP POLICY IF EXISTS "Team members can view employer profile" ON public.profiles;
+
+-- 2. Create a high-performance, non-recursive helper function
+-- Using SECURITY DEFINER to bypass the circular RLS check
+CREATE OR REPLACE FUNCTION public.get_my_company_id()
+RETURNS uuid AS $$
+  SELECT employer_id FROM public.company_members WHERE user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- 3. Simplified, fast policy for company_members
+CREATE POLICY "Company members can view their team" ON company_members
+  FOR SELECT TO authenticated
+  USING (
+    user_id = auth.uid() OR 
+    employer_id = public.get_my_company_id() OR
+    auth.uid() = employer_id
+  );
+
+-- 4. Simplified, fast policy for profiles
+CREATE POLICY "Company members can view each other" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (
+    id = auth.uid() OR
+    id = public.get_my_company_id() OR
+    id IN (
+      SELECT user_id FROM public.company_members 
+      WHERE employer_id = public.get_my_company_id()
+    )
+  );
+
+-- Helper function to get all user IDs in the same companies as the current user
+CREATE OR REPLACE FUNCTION get_my_colleague_ids()
+RETURNS TABLE (uid uuid) LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT user_id FROM company_members 
+  WHERE employer_id IN (SELECT get_my_employer_ids());
+$$;
+
+-- Allow company members to see each other's profiles
+CREATE POLICY "Company members can view colleagues" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (
+    id IN (SELECT get_my_colleague_ids()) OR
+    id IN (SELECT get_my_employer_ids())
+  );
+
+-- Allow team members to view their employer's profile (for branding)
+CREATE POLICY "Team members can view employer profile" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (
+    id IN (SELECT get_my_employer_ids())
+  );
+
+-- Also ensure employers can view their team members' profiles
+CREATE POLICY "Employers can view their team members" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (
+    id IN (SELECT user_id FROM company_members WHERE employer_id = auth.uid())
+  );
+
+-- More precise fix for team member account types
+UPDATE profiles
+SET account_type = 'team_member'
+WHERE id IN (
+  SELECT user_id 
+  FROM company_members 
+  WHERE user_id != employer_id
+);
+
+-- Fix existing team members who were created with the wrong account_type
+UPDATE profiles
+SET account_type = 'team_member'
+WHERE id IN (SELECT user_id FROM company_members)
+AND account_type != 'employer' 
+AND account_type != 'job_poster';
+
+
+-- Fix existing team members who were created with the wrong account_type
+UPDATE profiles
+SET account_type = 'team_member'
+WHERE id IN (SELECT user_id FROM company_members)
+AND account_type != 'employer' 
+AND account_type != 'job_poster';
+
+
+-- Fix existing team members who were created with the wrong account_type
+UPDATE profiles
+SET account_type = 'team_member'
+WHERE id IN (SELECT user_id FROM company_members)
+AND account_type != 'employer' 
+AND account_type != 'job_poster';
+
+-- FORCE STANDARDIZATION OF BUCKET LOGIC
+-- This script will fix the "company_id" vs "employer_id" conflict once and for all.
+
+-- 1. Drop the dependent policies first to avoid "CASCADE" issues if we want to be explicit
+DROP POLICY IF EXISTS "Company members can view applications" ON applications;
+DROP POLICY IF EXISTS "Company members can update applications" ON applications;
+DROP POLICY IF EXISTS "Company admins can insert members" ON company_members;
+DROP POLICY IF EXISTS "Company admins can update members" ON company_members;
+DROP POLICY IF EXISTS "Company admins can delete members" ON company_members;
+DROP POLICY IF EXISTS "Company admins can manage members" ON company_members;
+DROP POLICY IF EXISTS "Team members can see their team" ON company_members;
+
+-- 2. Drop the problematic constraint
+ALTER TABLE IF EXISTS company_members DROP CONSTRAINT IF EXISTS company_members_company_id_fkey;
+
+-- 3. Standardize the columns in company_members
+-- If company_id exists, try to copy its data to employer_id before dropping
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'company_members' AND column_name = 'company_id') THEN
+        -- If employer_id exists, copy data
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'company_members' AND column_name = 'employer_id') THEN
+            UPDATE company_members SET employer_id = company_id WHERE employer_id IS NULL AND company_id IS NOT NULL;
+        END IF;
+        
+        -- Now drop company_id
+        ALTER TABLE company_members DROP COLUMN company_id CASCADE;
+    END IF;
+END $$;
+
+-- 4. Ensure employer_id is correctly set up
+ALTER TABLE company_members ADD COLUMN IF NOT EXISTS employer_id uuid REFERENCES profiles(id) ON DELETE CASCADE;
+
+-- 5. RECREATE THE POLICIES using employer_id
+-- We use a helper function to avoid infinite recursion in RLS
+CREATE OR REPLACE FUNCTION get_my_employer_ids()
+RETURNS TABLE (eid uuid) LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT employer_id FROM company_members WHERE user_id = auth.uid();
+$$;
+
+-- Policy for applications: Members can view if they belong to the company that posted the job
+CREATE POLICY "Company members can view applications" ON applications
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM company_members cm 
+      JOIN jobs j ON j.id = applications.job_id
+      WHERE cm.user_id = auth.uid() AND cm.employer_id = j.posted_by
+    ) OR auth.uid() = (SELECT posted_by FROM jobs WHERE id = job_id)
+  );
+
+-- Policy for company_members: Admins (owners) can manage members
+CREATE POLICY "Company admins can manage members" ON company_members
+  FOR ALL TO authenticated
+  USING (auth.uid() = employer_id)
+  WITH CHECK (auth.uid() = employer_id);
+
+-- Policy for company_members: Members can see their own team
+CREATE POLICY "Team members can see their team" ON company_members
+  FOR SELECT TO authenticated
+  USING (
+    user_id = auth.uid() OR 
+    employer_id IN (SELECT get_my_employer_ids())
+  );
+
+-- 6. Enable RLS
+ALTER TABLE company_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE applications ENABLE ROW LEVEL SECURITY;
+
+-- FORCE STANDARDIZATION OF BUCKET LOGIC
+-- This script will fix the "company_id" vs "employer_id" conflict once and for all.
+
+-- 1. Drop the dependent policies first to avoid "CASCADE" issues if we want to be explicit
+DROP POLICY IF EXISTS "Company members can view applications" ON applications;
+DROP POLICY IF EXISTS "Company members can update applications" ON applications;
+DROP POLICY IF EXISTS "Company admins can insert members" ON company_members;
+DROP POLICY IF EXISTS "Company admins can update members" ON company_members;
+DROP POLICY IF EXISTS "Company admins can delete members" ON company_members;
+
+-- 2. Drop the problematic constraint
+ALTER TABLE IF EXISTS company_members DROP CONSTRAINT IF EXISTS company_members_company_id_fkey;
+
+-- 3. Standardize the columns in company_members
+-- If company_id exists, try to copy its data to employer_id before dropping
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'company_members' AND column_name = 'company_id') THEN
+        -- If employer_id exists, copy data
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'company_members' AND column_name = 'employer_id') THEN
+            UPDATE company_members SET employer_id = company_id WHERE employer_id IS NULL AND company_id IS NOT NULL;
+        END IF;
+        
+        -- Now drop company_id
+        ALTER TABLE company_members DROP COLUMN company_id CASCADE;
+    END IF;
+END $$;
+
+-- 4. Ensure employer_id is correctly set up
+ALTER TABLE company_members ADD COLUMN IF NOT EXISTS employer_id uuid REFERENCES profiles(id) ON DELETE CASCADE;
+
+-- 5. RECREATE THE POLICIES using employer_id
+-- We use a helper function to avoid infinite recursion in RLS
+CREATE OR REPLACE FUNCTION get_my_employer_ids()
+RETURNS TABLE (eid uuid) LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT employer_id FROM company_members WHERE user_id = auth.uid();
+$$;
+
+-- Policy for applications: Members can view if they belong to the company that posted the job
+CREATE POLICY "Company members can view applications" ON applications
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM company_members cm 
+      JOIN jobs j ON j.id = applications.job_id
+      WHERE cm.user_id = auth.uid() AND cm.employer_id = j.posted_by
+    ) OR auth.uid() = (SELECT posted_by FROM jobs WHERE id = job_id)
+  );
+
+-- Policy for company_members: Admins (owners) can manage members
+CREATE POLICY "Company admins can manage members" ON company_members
+  FOR ALL TO authenticated
+  USING (auth.uid() = employer_id)
+  WITH CHECK (auth.uid() = employer_id);
+
+-- Policy for company_members: Members can see their own team
+CREATE POLICY "Team members can see their team" ON company_members
+  FOR SELECT TO authenticated
+  USING (
+    user_id = auth.uid() OR 
+    employer_id IN (SELECT get_my_employer_ids())
+  );
+
+-- 6. Enable RLS
+ALTER TABLE company_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE applications ENABLE ROW LEVEL SECURITY;
+
+-- FORCE STANDARDIZATION OF BUCKET LOGIC
+-- This script will fix the "company_id" vs "employer_id" conflict once and for all.
+
+-- 1. Drop the dependent policies first to avoid "CASCADE" issues if we want to be explicit
+DROP POLICY IF EXISTS "Company members can view applications" ON applications;
+DROP POLICY IF EXISTS "Company members can update applications" ON applications;
+DROP POLICY IF EXISTS "Company admins can insert members" ON company_members;
+DROP POLICY IF EXISTS "Company admins can update members" ON company_members;
+DROP POLICY IF EXISTS "Company admins can delete members" ON company_members;
+
+-- 2. Drop the problematic constraint
+ALTER TABLE IF EXISTS company_members DROP CONSTRAINT IF EXISTS company_members_company_id_fkey;
+
+-- 3. Standardize the columns in company_members
+-- If company_id exists, try to copy its data to employer_id before dropping
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'company_members' AND column_name = 'company_id') THEN
+        -- If employer_id exists, copy data
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'company_members' AND column_name = 'employer_id') THEN
+            UPDATE company_members SET employer_id = company_id WHERE employer_id IS NULL AND company_id IS NOT NULL;
+        END IF;
+        
+        -- Now drop company_id
+        ALTER TABLE company_members DROP COLUMN company_id CASCADE;
+    END IF;
+END $$;
+
+-- 4. Ensure employer_id is correctly set up
+ALTER TABLE company_members ADD COLUMN IF NOT EXISTS employer_id uuid REFERENCES profiles(id) ON DELETE CASCADE;
+
+-- 5. RECREATE THE POLICIES using employer_id
+-- We assume the logic is: members can see things where their employer_id matches the owner of the object
+
+-- Policy for applications: Members can view if they belong to the company that posted the job
+CREATE POLICY "Company members can view applications" ON applications
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM company_members cm 
+      JOIN jobs j ON j.id = applications.job_id
+      WHERE cm.user_id = auth.uid() AND cm.employer_id = j.posted_by
+    ) OR auth.uid() = (SELECT posted_by FROM jobs WHERE id = job_id)
+  );
+
+-- Policy for company_members: Admins (owners) can manage members
+CREATE POLICY "Company admins can manage members" ON company_members
+  FOR ALL TO authenticated
+  USING (auth.uid() = employer_id)
+  WITH CHECK (auth.uid() = employer_id);
+
+-- Policy for company_members: Members can see their own team
+CREATE POLICY "Team members can see their team" ON company_members
+  FOR SELECT TO authenticated
+  USING (
+    employer_id IN (SELECT employer_id FROM company_members WHERE user_id = auth.uid())
+  );
+
+-- 6. Enable RLS
+ALTER TABLE company_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE applications ENABLE ROW LEVEL SECURITY;
+
+-- STANDARDIZE company_members table
+-- This script ensures the table matches the code's expectations.
+
+-- 1. Drop the problematic foreign key if it exists
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'company_members_company_id_fkey') THEN
+        ALTER TABLE company_members DROP CONSTRAINT company_members_company_id_fkey;
+    END IF;
+END $$;
+
+-- 2. Drop the company_id column if it exists
+ALTER TABLE company_members DROP COLUMN IF EXISTS company_id;
+
+-- 3. Ensure employer_id exists and is correct
+ALTER TABLE company_members ADD COLUMN IF NOT EXISTS employer_id uuid REFERENCES profiles(id) ON DELETE CASCADE;
+
+-- 4. Ensure RLS is still correct
+ALTER TABLE company_members ENABLE ROW LEVEL SECURITY;
+
+-- Policy to allow Admins to view all company members for the Admin Panel
+DROP POLICY IF EXISTS "Admins can see all company members" ON company_members;
+
+CREATE POLICY "Admins can see all company members"
+ON company_members FOR SELECT
+USING (
+  EXISTS (
+    SELECT 1 FROM user_roles 
+    WHERE user_id = auth.uid() 
+    AND role = 'admin'
+  )
+);
+
+-- NUCLEAR RESET FOR company_members RLS
+-- This script clears all possible previous policies and sets up the correct non-recursive structure.
+
+-- 1. DROP ALL PREVIOUS POLICIES (Cleanup)
+DROP POLICY IF EXISTS "Employers can manage their team" ON company_members;
+DROP POLICY IF EXISTS "Members can see their own record" ON company_members;
+DROP POLICY IF EXISTS "Owners can manage their team" ON company_members;
+DROP POLICY IF EXISTS "Members can see teammates" ON company_members;
+DROP POLICY IF EXISTS "Owners manage team" ON company_members;
+DROP POLICY IF EXISTS "Manage team" ON company_members;
+DROP POLICY IF EXISTS "View teammates" ON company_members;
+DROP POLICY IF EXISTS "Members see teammates" ON company_members;
+DROP POLICY IF EXISTS "company_members_admin_policy" ON company_members;
+DROP POLICY IF EXISTS "company_members_view_policy" ON company_members;
+
+-- 2. CREATE HELPER FUNCTIONS (To prevent infinite recursion)
+CREATE OR REPLACE FUNCTION public.check_is_team_member(org_id uuid)
+RETURNS boolean AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM company_members 
+    WHERE user_id = auth.uid() 
+    AND employer_id = org_id
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.check_is_company_admin(org_id uuid)
+RETURNS boolean AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM company_members 
+    WHERE user_id = auth.uid() 
+    AND employer_id = org_id
+    AND role IN ('admin', 'hiring_manager')
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 3. CREATE NEW STABLE POLICIES
+-- Owners and Admins/Managers can manage the team
+CREATE POLICY "company_members_admin_policy"
+  ON company_members FOR ALL
+  USING (
+    auth.uid() = employer_id OR 
+    check_is_company_admin(employer_id)
+  );
+
+-- Members can see their teammates
+CREATE POLICY "company_members_view_policy"
+  ON company_members FOR SELECT
+  USING (
+    auth.uid() = user_id OR 
+    check_is_team_member(employer_id)
+  );
+
+-- Fix RLS for company_members to allow teammates to see each other
+DROP POLICY IF EXISTS "Employers can manage their team" ON company_members;
+DROP POLICY IF EXISTS "Members can see their own record" ON company_members;
+
+-- 1. Owners (Employers) can do everything
+CREATE POLICY "Owners can manage their team"
+  ON company_members FOR ALL
+  USING (auth.uid() = employer_id);
+
+-- 2. Members can see all other members in the same organization
+CREATE POLICY "Members can see teammates"
+  ON company_members FOR SELECT
+  USING (
+    auth.uid() = user_id OR 
+    EXISTS (
+      SELECT 1 FROM company_members cm 
+      WHERE cm.user_id = auth.uid() 
+      AND cm.employer_id = company_members.employer_id
+    )
+  );
+
+-- 1. Create a function to check membership without recursion
+CREATE OR REPLACE FUNCTION public.check_is_team_member(org_id uuid)
+RETURNS boolean AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM company_members 
+    WHERE user_id = auth.uid() 
+    AND employer_id = org_id
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 2. Fix RLS for company_members
+DROP POLICY IF EXISTS "Owners can manage their team" ON company_members;
+DROP POLICY IF EXISTS "Members can see teammates" ON company_members;
+
+-- Owners can do everything
+CREATE POLICY "Owners manage team"
+  ON company_members FOR ALL
+  USING (auth.uid() = employer_id);
+
+-- Members can see teammates (using the non-recursive function)
+CREATE POLICY "Members see teammates"
+  ON company_members FOR SELECT
+  USING (
+    auth.uid() = user_id OR 
+    check_is_team_member(employer_id)
+  );
+
+-- Fix RLS for company_members to allow teammates to see each other
+DROP POLICY IF EXISTS "Employers can manage their team" ON company_members;
+DROP POLICY IF EXISTS "Members can see their own record" ON company_members;
+
+-- 1. Owners (Employers) can do everything
+CREATE POLICY "Owners can manage their team"
+  ON company_members FOR ALL
+  USING (auth.uid() = employer_id);
+
+-- 2. Members can see all other members in the same organization
+CREATE POLICY "Members can see teammates"
+  ON company_members FOR SELECT
+  USING (
+    auth.uid() = user_id OR 
+    EXISTS (
+      SELECT 1 FROM company_members cm 
+      WHERE cm.user_id = auth.uid() 
+      AND cm.employer_id = company_members.employer_id
+    )
+  );
+
+-- Add rejection_reason column to applications table
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+
+-- ============================================================
+-- Ensure SmartScreen Assessments table has all required columns
+-- ============================================================
+
+ALTER TABLE public.smartscreen_assessments 
+ADD COLUMN IF NOT EXISTS completed_at timestamptz,
+ADD COLUMN IF NOT EXISTS results jsonb DEFAULT '{}'::jsonb;
+
+-- Ensure the schema cache is refreshed
+NOTIFY pgrst, 'reload schema';
+
+-- ============================================================
+-- CV Requests Workflow
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS public.cv_requests (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employer_id uuid NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  candidate_id uuid NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  status text NOT NULL DEFAULT 'pending', -- 'pending', 'sent', 'declined'
+  cv_path text, -- The path to the CV file in storage once sent
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+-- Enable RLS
+ALTER TABLE public.cv_requests ENABLE ROW LEVEL SECURITY;
+
+-- 1. Candidates can see requests sent to them
+DROP POLICY IF EXISTS "Candidates view own CV requests" ON public.cv_requests;
+CREATE POLICY "Candidates view own CV requests" ON public.cv_requests
+  FOR SELECT TO authenticated
+  USING (auth.uid() = candidate_id);
+
+-- 2. Candidates can update their own requests (to send the CV)
+DROP POLICY IF EXISTS "Candidates update own CV requests" ON public.cv_requests;
+CREATE POLICY "Candidates update own CV requests" ON public.cv_requests
+  FOR UPDATE TO authenticated
+  USING (auth.uid() = candidate_id)
+  WITH CHECK (auth.uid() = candidate_id);
+
+-- 3. Employers can see requests they sent
+DROP POLICY IF EXISTS "Employers view sent CV requests" ON public.cv_requests;
+CREATE POLICY "Employers view sent CV requests" ON public.cv_requests
+  FOR SELECT TO authenticated
+  USING (auth.uid() = employer_id);
+
+-- 4. Employers can create requests
+DROP POLICY IF EXISTS "Employers create CV requests" ON public.cv_requests;
+CREATE POLICY "Employers create CV requests" ON public.cv_requests
+  FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = employer_id);
+
+-- Add to Realtime
+ALTER PUBLICATION supabase_realtime ADD TABLE public.cv_requests;
+
+-- ============================================================
+-- Fix Employer Access to Applications and Jobs
+-- ============================================================
+
+-- 1. Allow employers to view and manage their own jobs (even inactive ones)
+DROP POLICY IF EXISTS "Employers manage own jobs" ON public.jobs;
+CREATE POLICY "Employers manage own jobs" ON public.jobs
+  FOR ALL TO authenticated
+  USING (auth.uid() = posted_by)
+  WITH CHECK (auth.uid() = posted_by);
+
+-- 2. Allow employers to view applications for their jobs
+DROP POLICY IF EXISTS "Employers view applications for their jobs" ON public.applications;
+CREATE POLICY "Employers view applications for their jobs" ON public.applications
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      WHERE j.id = applications.job_id
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- 3. Allow employers to update application status (e.g. moving in kanban)
+DROP POLICY IF EXISTS "Employers update application status" ON public.applications;
+CREATE POLICY "Employers update application status" ON public.applications
+  FOR UPDATE TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      WHERE j.id = applications.job_id
+      AND j.posted_by = auth.uid()
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      WHERE j.id = applications.job_id
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- 4. Allow employers to view profiles of candidates who applied to their jobs
+-- This is critical for the select("profiles(...)") query in EmployerDashboard
+DROP POLICY IF EXISTS "Employers view applicant profiles" ON public.profiles;
+CREATE POLICY "Employers view applicant profiles" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.applications a
+      JOIN public.jobs j ON a.job_id = j.id
+      WHERE a.user_id = profiles.id
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- 5. Ensure storage access for applicant documents (CVs)
+-- Allow employers to read files in app-docs and cvs buckets if the user applied to their job
+DROP POLICY IF EXISTS "Employers view applicant CVs" ON storage.objects;
+CREATE POLICY "Employers view applicant CVs" ON storage.objects
+  FOR SELECT TO authenticated
+  USING (
+    (bucket_id IN ('cvs', 'app-docs')) AND
+    EXISTS (
+      SELECT 1 FROM public.applications a
+      JOIN public.jobs j ON a.job_id = j.id
+      WHERE a.user_id::text = (storage.foldername(name))[1]
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- 6. Allow employers to send notifications to candidates
+-- Fixes "new row violates row-level security policy for table 'notifications'"
+DROP POLICY IF EXISTS "Employers insert notifications" ON public.notifications;
+CREATE POLICY "Employers insert notifications" ON public.notifications
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    -- Allow if the notification is for a candidate who applied to their job
+    EXISTS (
+      SELECT 1 FROM public.applications a
+      JOIN public.jobs j ON a.job_id = j.id
+      WHERE a.user_id = notifications.user_id
+      AND j.posted_by = auth.uid()
+    )
+    OR
+    -- Allow if the employer is 'admin' (from public.profiles)
+    EXISTS (
+      SELECT 1 FROM public.profiles p
+      WHERE p.id = auth.uid()
+      AND p.account_type = 'employer' -- Simplified check for now
+    )
+  );
+
+-- ============================================================
+-- Fix Employer Access to Applications and Jobs
+-- ============================================================
+
+-- 1. Allow employers to view and manage their own jobs (even inactive ones)
+DROP POLICY IF EXISTS "Employers manage own jobs" ON public.jobs;
+CREATE POLICY "Employers manage own jobs" ON public.jobs
+  FOR ALL TO authenticated
+  USING (auth.uid() = posted_by)
+  WITH CHECK (auth.uid() = posted_by);
+
+-- 2. Allow employers to view applications for their jobs
+DROP POLICY IF EXISTS "Employers view applications for their jobs" ON public.applications;
+CREATE POLICY "Employers view applications for their jobs" ON public.applications
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      WHERE j.id = applications.job_id
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- 3. Allow employers to update application status (e.g. moving in kanban)
+DROP POLICY IF EXISTS "Employers update application status" ON public.applications;
+CREATE POLICY "Employers update application status" ON public.applications
+  FOR UPDATE TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      WHERE j.id = applications.job_id
+      AND j.posted_by = auth.uid()
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      WHERE j.id = applications.job_id
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- 4. Allow employers to view profiles of candidates who applied to their jobs
+-- This is critical for the select("profiles(...)") query in EmployerDashboard
+DROP POLICY IF EXISTS "Employers view applicant profiles" ON public.profiles;
+CREATE POLICY "Employers view applicant profiles" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.applications a
+      JOIN public.jobs j ON a.job_id = j.id
+      WHERE a.user_id = profiles.id
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- 5. Ensure storage access for applicant documents (CVs)
+-- Allow employers to read files in app-docs and cvs buckets if the user applied to their job
+DROP POLICY IF EXISTS "Employers view applicant CVs" ON storage.objects;
+CREATE POLICY "Employers view applicant CVs" ON storage.objects
+  FOR SELECT TO authenticated
+  USING (
+    (bucket_id IN ('cvs', 'app-docs')) AND
+    EXISTS (
+      SELECT 1 FROM public.applications a
+      JOIN public.jobs j ON a.job_id = j.id
+      WHERE a.user_id::text = (storage.foldername(name))[1]
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- 6. Allow employers to send notifications to candidates
+-- Fixes "new row violates row-level security policy for table 'notifications'"
+DROP POLICY IF EXISTS "Employers insert notifications" ON public.notifications;
+CREATE POLICY "Employers insert notifications" ON public.notifications
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    -- Allow if the notification is for a candidate who applied to their job
+    EXISTS (
+      SELECT 1 FROM public.applications a
+      JOIN public.jobs j ON a.job_id = j.id
+      WHERE a.user_id = notifications.user_id
+      AND j.posted_by = auth.uid()
+    )
+    OR
+    -- Allow if the employer is 'admin' (from public.profiles)
+    EXISTS (
+      SELECT 1 FROM public.profiles p
+      WHERE p.id = auth.uid()
+      AND p.account_type = 'employer' -- Simplified check for now
+    )
+  );
+
+-- ============================================================
+-- Fix Employer Access to Applications and Jobs
+-- ============================================================
+
+-- 1. Allow employers to view and manage their own jobs (even inactive ones)
+DROP POLICY IF EXISTS "Employers manage own jobs" ON public.jobs;
+CREATE POLICY "Employers manage own jobs" ON public.jobs
+  FOR ALL TO authenticated
+  USING (auth.uid() = posted_by)
+  WITH CHECK (auth.uid() = posted_by);
+
+-- 2. Allow employers to view applications for their jobs
+DROP POLICY IF EXISTS "Employers view applications for their jobs" ON public.applications;
+CREATE POLICY "Employers view applications for their jobs" ON public.applications
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      WHERE j.id = applications.job_id
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- 3. Allow employers to update application status (e.g. moving in kanban)
+DROP POLICY IF EXISTS "Employers update application status" ON public.applications;
+CREATE POLICY "Employers update application status" ON public.applications
+  FOR UPDATE TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      WHERE j.id = applications.job_id
+      AND j.posted_by = auth.uid()
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      WHERE j.id = applications.job_id
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- 4. Allow employers to view profiles of candidates who applied to their jobs
+-- This is critical for the select("profiles(...)") query in EmployerDashboard
+DROP POLICY IF EXISTS "Employers view applicant profiles" ON public.profiles;
+CREATE POLICY "Employers view applicant profiles" ON public.profiles
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.applications a
+      JOIN public.jobs j ON a.job_id = j.id
+      WHERE a.user_id = profiles.id
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- 5. Ensure storage access for applicant documents (CVs)
+-- Allow employers to read files in app-docs and cvs buckets if the user applied to their job
+DROP POLICY IF EXISTS "Employers view applicant CVs" ON storage.objects;
+CREATE POLICY "Employers view applicant CVs" ON storage.objects
+  FOR SELECT TO authenticated
+  USING (
+    (bucket_id IN ('cvs', 'app-docs')) AND
+    EXISTS (
+      SELECT 1 FROM public.applications a
+      JOIN public.jobs j ON a.job_id = j.id
+      WHERE a.user_id::text = (storage.foldername(name))[1]
+      AND j.posted_by = auth.uid()
+    )
+  );
+
+-- ============================================================
+-- SmartScreen + AI Assistant Migration
+-- Run this in your Supabase SQL editor (Dashboard > SQL Editor)
+-- ============================================================
+
+-- 1. Fix application_status enum to include all pipeline stages
+-- Add missing values if they don't exist
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_enum
+    WHERE enumtypid = 'application_status'::regtype
+    AND enumlabel = 'reviewing'
+  ) THEN
+    ALTER TYPE application_status ADD VALUE 'reviewing';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_enum
+    WHERE enumtypid = 'application_status'::regtype
+    AND enumlabel = 'shortlisted'
+  ) THEN
+    ALTER TYPE application_status ADD VALUE 'shortlisted';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_enum
+    WHERE enumtypid = 'application_status'::regtype
+    AND enumlabel = 'interview'
+  ) THEN
+    ALTER TYPE application_status ADD VALUE 'interview';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_enum
+    WHERE enumtypid = 'application_status'::regtype
+    AND enumlabel = 'hired'
+  ) THEN
+    ALTER TYPE application_status ADD VALUE 'hired';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_enum
+    WHERE enumtypid = 'application_status'::regtype
+    AND enumlabel = 'declined'
+  ) THEN
+    ALTER TYPE application_status ADD VALUE 'declined';
+  END IF;
+END $$;
+
+-- 2. Add merged_cv_path to applications if not exists
+ALTER TABLE applications
+  ADD COLUMN IF NOT EXISTS merged_cv_path text;
+
+-- 3. Create company_members table (for team invites)
+CREATE TABLE IF NOT EXISTS company_members (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employer_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  role text NOT NULL DEFAULT 'recruiter' CHECK (role IN ('admin', 'hiring_manager', 'recruiter')),
+  invited_at timestamptz DEFAULT now(),
+  accepted_at timestamptz,
+  UNIQUE (employer_id, user_id)
+);
+
+-- Ensure columns exist if table was already there
+ALTER TABLE company_members ADD COLUMN IF NOT EXISTS employer_id uuid REFERENCES profiles(id);
+ALTER TABLE company_members ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES profiles(id);
+ALTER TABLE company_members ADD COLUMN IF NOT EXISTS role text;
+
+ALTER TABLE company_members ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Employers can manage their team" ON company_members;
+CREATE POLICY "Employers can manage their team"
+  ON company_members FOR ALL
+  USING (auth.uid() = employer_id)
+  WITH CHECK (auth.uid() = employer_id);
+
+DROP POLICY IF EXISTS "Members can see their own record" ON company_members;
+CREATE POLICY "Members can see their own record"
+  ON company_members FOR SELECT
+  USING (auth.uid() = user_id);
+
+-- 4. SmartScreen Assessments Table
+CREATE TABLE IF NOT EXISTS smartscreen_assessments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employer_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  candidate_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  job_id uuid NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  application_id uuid REFERENCES applications(id) ON DELETE SET NULL,
+  type text NOT NULL CHECK (type IN ('video_pitch', 'smart_quiz', 'task_submission', 'culture_fit')),
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'in_progress', 'completed', 'expired', 'skipped')),
+  questions jsonb,           -- array of question strings
+  category text,             -- for quiz: category name
+  num_questions integer,     -- for quiz: 5/10/15
+  time_limit_mins integer,   -- for quiz: 10/15/20
+  task_instructions text,    -- for task submission
+  culture_values text[],     -- for culture fit: selected values
+  deadline timestamptz,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+-- Ensure columns exist if table was already there
+ALTER TABLE smartscreen_assessments ADD COLUMN IF NOT EXISTS employer_id uuid REFERENCES profiles(id);
+ALTER TABLE smartscreen_assessments ADD COLUMN IF NOT EXISTS candidate_id uuid REFERENCES profiles(id);
+ALTER TABLE smartscreen_assessments ADD COLUMN IF NOT EXISTS job_id uuid REFERENCES jobs(id);
+
+ALTER TABLE smartscreen_assessments ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Employers manage own assessments" ON smartscreen_assessments;
+CREATE POLICY "Employers manage own assessments"
+  ON smartscreen_assessments FOR ALL
+  USING (auth.uid() = employer_id)
+  WITH CHECK (auth.uid() = employer_id);
+
+DROP POLICY IF EXISTS "Candidates view their assessments" ON smartscreen_assessments;
+CREATE POLICY "Candidates view their assessments"
+  ON smartscreen_assessments FOR SELECT
+  USING (auth.uid() = candidate_id);
+
+DROP POLICY IF EXISTS "Candidates update their assessment status" ON smartscreen_assessments;
+CREATE POLICY "Candidates update their assessment status"
+  ON smartscreen_assessments FOR UPDATE
+  USING (auth.uid() = candidate_id)
+  WITH CHECK (auth.uid() = candidate_id);
+
+-- 5. SmartScreen Responses Table
+CREATE TABLE IF NOT EXISTS smartscreen_responses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  assessment_id uuid NOT NULL REFERENCES smartscreen_assessments(id) ON DELETE CASCADE,
+  candidate_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  response_text text,
+  file_url text,
+  video_url text,
+  answers jsonb,             -- for quiz: array of answers with correctness
+  score numeric,             -- percentage score 0-100
+  rating integer CHECK (rating BETWEEN 1 AND 5), -- employer rating for task
+  employer_notes text,       -- private notes from employer
+  submitted_at timestamptz DEFAULT now()
+);
+
+ALTER TABLE smartscreen_responses ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Candidates manage own responses" ON smartscreen_responses;
+CREATE POLICY "Candidates manage own responses"
+  ON smartscreen_responses FOR ALL
+  USING (auth.uid() = candidate_id)
+  WITH CHECK (auth.uid() = candidate_id);
+
+DROP POLICY IF EXISTS "Employers view responses for their assessments" ON smartscreen_responses;
+CREATE POLICY "Employers view responses for their assessments"
+  ON smartscreen_responses FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM smartscreen_assessments sa
+      WHERE sa.id = smartscreen_responses.assessment_id
+      AND sa.employer_id = auth.uid()
+    )
+  );
+
+DROP POLICY IF EXISTS "Employers update response ratings" ON smartscreen_responses;
+CREATE POLICY "Employers update response ratings"
+  ON smartscreen_responses FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM smartscreen_assessments sa
+      WHERE sa.id = smartscreen_responses.assessment_id
+      AND sa.employer_id = auth.uid()
+    )
+  );
+
+-- 6. Interview Slots Table
+CREATE TABLE IF NOT EXISTS interview_slots (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employer_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  job_id uuid NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  application_id uuid REFERENCES applications(id) ON DELETE SET NULL,
+  slot_datetime timestamptz NOT NULL,
+  interview_type text NOT NULL DEFAULT 'virtual' CHECK (interview_type IN ('in_person', 'virtual')),
+  location_or_link text,
+  is_booked boolean DEFAULT false,
+  booked_by uuid REFERENCES profiles(id),
+  confirmed_at timestamptz,
+  reminder_24h_sent boolean DEFAULT false,
+  reminder_1h_sent boolean DEFAULT false,
+  created_at timestamptz DEFAULT now()
+);
+
+-- Ensure columns exist if table was already there
+ALTER TABLE interview_slots ADD COLUMN IF NOT EXISTS employer_id uuid REFERENCES profiles(id);
+ALTER TABLE interview_slots ADD COLUMN IF NOT EXISTS job_id uuid REFERENCES jobs(id);
+
+ALTER TABLE interview_slots ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Employers manage their slots" ON interview_slots;
+CREATE POLICY "Employers manage their slots"
+  ON interview_slots FOR ALL
+  USING (auth.uid() = employer_id)
+  WITH CHECK (auth.uid() = employer_id);
+
+DROP POLICY IF EXISTS "Candidates view and book slots" ON interview_slots;
+CREATE POLICY "Candidates view and book slots"
+  ON interview_slots FOR SELECT
+  USING (
+    auth.uid() = booked_by OR
+    EXISTS (
+      SELECT 1 FROM applications a
+      WHERE a.id = interview_slots.application_id
+      AND a.user_id = auth.uid()
+    )
+  );
+
+DROP POLICY IF EXISTS "Candidates book a slot" ON interview_slots;
+CREATE POLICY "Candidates book a slot"
+  ON interview_slots FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM applications a
+      WHERE a.id = interview_slots.application_id
+      AND a.user_id = auth.uid()
+    )
+  );
+
+-- 7. Interview Scorecards Table
+CREATE TABLE IF NOT EXISTS interview_scorecards (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  employer_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  candidate_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  job_id uuid NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  application_id uuid REFERENCES applications(id) ON DELETE SET NULL,
+  communication integer CHECK (communication BETWEEN 1 AND 5),
+  technical integer CHECK (technical BETWEEN 1 AND 5),
+  culture_fit integer CHECK (culture_fit BETWEEN 1 AND 5),
+  problem_solving integer CHECK (problem_solving BETWEEN 1 AND 5),
+  overall_impression integer CHECK (overall_impression BETWEEN 1 AND 5),
+  notes text,
+  decision text CHECK (decision IN ('advance_to_offer', 'hold', 'decline')),
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+-- Ensure columns exist if table was already there
+ALTER TABLE interview_scorecards ADD COLUMN IF NOT EXISTS employer_id uuid REFERENCES profiles(id);
+ALTER TABLE interview_scorecards ADD COLUMN IF NOT EXISTS candidate_id uuid REFERENCES profiles(id);
+ALTER TABLE interview_scorecards ADD COLUMN IF NOT EXISTS job_id uuid REFERENCES jobs(id);
+
+ALTER TABLE interview_scorecards ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Employers manage scorecards" ON interview_scorecards;
+CREATE POLICY "Employers manage scorecards"
+  ON interview_scorecards FOR ALL
+  USING (auth.uid() = employer_id)
+  WITH CHECK (auth.uid() = employer_id);
+
+-- 8. Indexes for performance
+CREATE INDEX IF NOT EXISTS idx_smartscreen_assessments_employer ON smartscreen_assessments(employer_id);
+CREATE INDEX IF NOT EXISTS idx_smartscreen_assessments_candidate ON smartscreen_assessments(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_smartscreen_assessments_job ON smartscreen_assessments(job_id);
+CREATE INDEX IF NOT EXISTS idx_smartscreen_responses_assessment ON smartscreen_responses(assessment_id);
+CREATE INDEX IF NOT EXISTS idx_interview_slots_employer ON interview_slots(employer_id);
+CREATE INDEX IF NOT EXISTS idx_interview_slots_job ON interview_slots(job_id);
+CREATE INDEX IF NOT EXISTS idx_interview_scorecards_employer ON interview_scorecards(employer_id);
+CREATE INDEX IF NOT EXISTS idx_interview_scorecards_job ON interview_scorecards(job_id);
+
+-- 9. Grant authenticated users access
+GRANT USAGE ON SCHEMA public TO authenticated;
+GRANT ALL ON smartscreen_assessments TO authenticated;
+GRANT ALL ON smartscreen_responses TO authenticated;
+GRANT ALL ON interview_slots TO authenticated;
+GRANT ALL ON interview_scorecards TO authenticated;
+GRANT ALL ON company_members TO authenticated;
+
+
+
+SELECT id, full_name, fcm_token FROM profiles LIMIT 10;
+
+
+-- 0. Create Missing Tables that were never migrated
+CREATE TABLE IF NOT EXISTS public.revamp_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    current_job_title TEXT,
+    target_job_title TEXT,
+    notes TEXT,
+    cv_path TEXT,
+    attachment_paths TEXT[],
+    payment_status TEXT DEFAULT 'pending',
+    fulfilment_status TEXT DEFAULT 'new',
+    partner_notes TEXT,
+    revamped_cv_path TEXT,
+    revamped_cv_filename TEXT,
+    delivered_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    revamp_amount NUMERIC
+);
+
+CREATE TABLE IF NOT EXISTS public.interview_preps (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    target_role TEXT,
+    interview_date TIMESTAMP WITH TIME ZONE,
+    session_scheduled_at TIMESTAMP WITH TIME ZONE,
+    meeting_link TEXT,
+    script_path TEXT,
+    attachment_paths TEXT[],
+    payment_status TEXT DEFAULT 'pending',
+    status TEXT DEFAULT 'new',
+    partner_notes TEXT,
+    delivered_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    amount NUMERIC
+);
+
+-- Enable RLS on the new tables
+ALTER TABLE public.revamp_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.interview_preps ENABLE ROW LEVEL SECURITY;
+
+-- Allow candidates to view and insert their own requests
+DROP POLICY IF EXISTS "Users can view own revamp_requests" ON public.revamp_requests;
+DROP POLICY IF EXISTS "Users can insert own revamp_requests" ON public.revamp_requests;
+DROP POLICY IF EXISTS "Users can view own interview_preps" ON public.interview_preps;
+DROP POLICY IF EXISTS "Users can insert own interview_preps" ON public.interview_preps;
+
+CREATE POLICY "Users can view own revamp_requests" ON public.revamp_requests FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Users can insert own revamp_requests" ON public.revamp_requests FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can view own interview_preps" ON public.interview_preps FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Users can insert own interview_preps" ON public.interview_preps FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+-- Allow Partners/Admins to view and update ALL requests
+DROP POLICY IF EXISTS "Partners can view all revamp_requests" ON public.revamp_requests;
+DROP POLICY IF EXISTS "Partners can update revamp_requests" ON public.revamp_requests;
+DROP POLICY IF EXISTS "Partners can view all interview_preps" ON public.interview_preps;
+DROP POLICY IF EXISTS "Partners can update interview_preps" ON public.interview_preps;
+
+CREATE POLICY "Partners can view all revamp_requests" ON public.revamp_requests FOR SELECT USING (EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role IN ('partner', 'admin')));
+CREATE POLICY "Partners can update revamp_requests" ON public.revamp_requests FOR UPDATE USING (EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role IN ('partner', 'admin')));
+CREATE POLICY "Partners can view all interview_preps" ON public.interview_preps FOR SELECT USING (EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role IN ('partner', 'admin')));
+CREATE POLICY "Partners can update interview_preps" ON public.interview_preps FOR UPDATE USING (EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role IN ('partner', 'admin')));
+
+
+-- 1. Create the missing Storage Buckets for CVs, Applications, and Partner Documents
+INSERT INTO storage.buckets (id, name, public) VALUES ('cvs', 'cvs', true) ON CONFLICT DO NOTHING;
+INSERT INTO storage.buckets (id, name, public) VALUES ('app-documents', 'app-documents', true) ON CONFLICT DO NOTHING;
+INSERT INTO storage.buckets (id, name, public) VALUES ('partner-docs', 'partner-docs', true) ON CONFLICT DO NOTHING;
+
+-- 2. Clean up any broken or default storage policies to prevent overlap
+DROP POLICY IF EXISTS "Public Access" ON storage.objects;
+DROP POLICY IF EXISTS "Auth Insert" ON storage.objects;
+DROP POLICY IF EXISTS "Auth Update" ON storage.objects;
+
+-- 3. Create secure Storage Policies to allow authenticated users to upload their CVs and documents
+CREATE POLICY "Public Access" ON storage.objects FOR SELECT USING ( true );
+CREATE POLICY "Auth Insert" ON storage.objects FOR INSERT WITH CHECK ( auth.role() = 'authenticated' );
+CREATE POLICY "Auth Update" ON storage.objects FOR UPDATE USING ( auth.role() = 'authenticated' );
+
+-- 4. Enable Supabase Realtime for the required tables
+DO $$
+BEGIN
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.revamp_requests; EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.interview_preps; EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.notifications; EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.applications; EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.quick_jobs; EXCEPTION WHEN OTHERS THEN NULL; END;
+END;
+$$;
+
+-- 5. Apply the latest schema updates that the CLI failed to push
+-- Add career_summary column to profiles
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS career_summary text;
+
+-- Add preferred_gender to quick_jobs
+ALTER TABLE public.quick_jobs ADD COLUMN IF NOT EXISTS preferred_gender text DEFAULT 'Any';
+
+-- Setup safe Employer Headhunt Policy
+DROP POLICY IF EXISTS "Employers view active candidate profiles" ON public.profiles;
+
+CREATE OR REPLACE FUNCTION public.get_my_account_type()
+RETURNS text
+LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public AS $$
+  SELECT account_type FROM public.profiles WHERE id = auth.uid();
+$$;
+
+CREATE POLICY "Employers view active candidate profiles"
+  ON public.profiles
+  FOR SELECT
+  TO authenticated
+  USING (
+    public.get_my_account_type() = 'employer'
+    AND subscription_status = 'active'
+    AND (account_type IS NULL OR account_type NOT IN ('employer', 'quick_jobs'))
+    AND id != auth.uid()
+  );
+
+-- 0. Create Missing Tables that were never migrated
+CREATE TABLE IF NOT EXISTS public.revamp_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    current_job_title TEXT,
+    target_job_title TEXT,
+    notes TEXT,
+    cv_path TEXT,
+    attachment_paths TEXT[],
+    payment_status TEXT DEFAULT 'pending',
+    fulfilment_status TEXT DEFAULT 'new',
+    partner_notes TEXT,
+    revamped_cv_path TEXT,
+    revamped_cv_filename TEXT,
+    delivered_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    revamp_amount NUMERIC
+);
+
+CREATE TABLE IF NOT EXISTS public.interview_preps (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    target_role TEXT,
+    interview_date TIMESTAMP WITH TIME ZONE,
+    session_scheduled_at TIMESTAMP WITH TIME ZONE,
+    meeting_link TEXT,
+    script_path TEXT,
+    attachment_paths TEXT[],
+    payment_status TEXT DEFAULT 'pending',
+    status TEXT DEFAULT 'new',
+    partner_notes TEXT,
+    delivered_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    amount NUMERIC
+);
+
+-- Enable RLS on the new tables
+ALTER TABLE public.revamp_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.interview_preps ENABLE ROW LEVEL SECURITY;
+
+-- Allow candidates to view and insert their own requests
+CREATE POLICY "Users can view own revamp_requests" ON public.revamp_requests FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Users can insert own revamp_requests" ON public.revamp_requests FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can view own interview_preps" ON public.interview_preps FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Users can insert own interview_preps" ON public.interview_preps FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+-- Allow Partners/Admins to view and update ALL requests
+CREATE POLICY "Partners can view all revamp_requests" ON public.revamp_requests FOR SELECT USING (EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role IN ('partner', 'admin')));
+CREATE POLICY "Partners can update revamp_requests" ON public.revamp_requests FOR UPDATE USING (EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role IN ('partner', 'admin')));
+CREATE POLICY "Partners can view all interview_preps" ON public.interview_preps FOR SELECT USING (EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role IN ('partner', 'admin')));
+CREATE POLICY "Partners can update interview_preps" ON public.interview_preps FOR UPDATE USING (EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = auth.uid() AND role IN ('partner', 'admin')));
+
+
+-- 1. Create the missing Storage Buckets for CVs, Applications, and Partner Documents
+INSERT INTO storage.buckets (id, name, public) VALUES ('cvs', 'cvs', true) ON CONFLICT DO NOTHING;
+INSERT INTO storage.buckets (id, name, public) VALUES ('app-documents', 'app-documents', true) ON CONFLICT DO NOTHING;
+INSERT INTO storage.buckets (id, name, public) VALUES ('partner-docs', 'partner-docs', true) ON CONFLICT DO NOTHING;
+
+-- 2. Clean up any broken or default storage policies to prevent overlap
+DROP POLICY IF EXISTS "Public Access" ON storage.objects;
+DROP POLICY IF EXISTS "Auth Insert" ON storage.objects;
+DROP POLICY IF EXISTS "Auth Update" ON storage.objects;
+
+-- 3. Create secure Storage Policies to allow authenticated users to upload their CVs and documents
+CREATE POLICY "Public Access" ON storage.objects FOR SELECT USING ( true );
+CREATE POLICY "Auth Insert" ON storage.objects FOR INSERT WITH CHECK ( auth.role() = 'authenticated' );
+CREATE POLICY "Auth Update" ON storage.objects FOR UPDATE USING ( auth.role() = 'authenticated' );
+
+-- 4. Enable Supabase Realtime for the required tables
+DO $$
+BEGIN
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.revamp_requests; EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.interview_preps; EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.notifications; EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.applications; EXCEPTION WHEN OTHERS THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE public.quick_jobs; EXCEPTION WHEN OTHERS THEN NULL; END;
+END;
+$$;
+
+ALTER TABLE public.applications 
+  DROP CONSTRAINT IF EXISTS applications_user_id_fkey;
+
+ALTER TABLE public.applications
+  ADD CONSTRAINT applications_user_id_fkey 
+  FOREIGN KEY (user_id) 
+  REFERENCES public.profiles(id) 
+  ON DELETE CASCADE;
+
+-- 1. USER ROLES
+ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users see own roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Admins see all roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Admins insert roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Admins update roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Admins delete roles" ON public.user_roles;
+
+CREATE POLICY "Users see own roles" ON public.user_roles FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Admins see all roles" ON public.user_roles FOR SELECT TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins insert roles" ON public.user_roles FOR INSERT TO authenticated WITH CHECK (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins update roles" ON public.user_roles FOR UPDATE TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins delete roles" ON public.user_roles FOR DELETE TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+
+-- 2. PROFILES
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users view own profile" ON public.profiles;
+DROP POLICY IF EXISTS "Users update own profile" ON public.profiles;
+DROP POLICY IF EXISTS "Users insert own profile" ON public.profiles;
+DROP POLICY IF EXISTS "Admins view all profiles" ON public.profiles;
+DROP POLICY IF EXISTS "Admins update all profiles" ON public.profiles;
+DROP POLICY IF EXISTS "Employers view active candidate profiles" ON public.profiles;
+
+CREATE POLICY "Users view own profile" ON public.profiles FOR SELECT TO authenticated USING (auth.uid() = id);
+CREATE POLICY "Users update own profile" ON public.profiles FOR UPDATE TO authenticated USING (auth.uid() = id);
+CREATE POLICY "Users insert own profile" ON public.profiles FOR INSERT TO authenticated WITH CHECK (auth.uid() = id);
+CREATE POLICY "Admins view all profiles" ON public.profiles FOR SELECT TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins update all profiles" ON public.profiles FOR UPDATE TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Employers view active candidate profiles" ON public.profiles FOR SELECT TO authenticated 
+  USING (
+    public.get_my_account_type() = 'employer' 
+    AND subscription_status = 'active' 
+    AND (account_type IS NULL OR account_type NOT IN ('employer', 'quick_jobs')) 
+    AND id != auth.uid()
+  );
+
+-- 3. JOBS
+ALTER TABLE public.jobs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Authenticated view active jobs" ON public.jobs;
+DROP POLICY IF EXISTS "Admins insert jobs" ON public.jobs;
+DROP POLICY IF EXISTS "Admins update jobs" ON public.jobs;
+DROP POLICY IF EXISTS "Admins delete jobs" ON public.jobs;
+DROP POLICY IF EXISTS "Employers can insert jobs" ON public.jobs;
+DROP POLICY IF EXISTS "Employers can update own jobs" ON public.jobs;
+DROP POLICY IF EXISTS "Employers can delete own jobs" ON public.jobs;
+
+CREATE POLICY "Authenticated view active jobs" ON public.jobs FOR SELECT TO authenticated USING (is_active = TRUE OR public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins insert jobs" ON public.jobs FOR INSERT TO authenticated WITH CHECK (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins update jobs" ON public.jobs FOR UPDATE TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins delete jobs" ON public.jobs FOR DELETE TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Employers can insert jobs" ON public.jobs FOR INSERT TO authenticated 
+  WITH CHECK (auth.uid() = posted_by AND (EXISTS (SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.account_type IN ('employer', 'job_poster'))));
+CREATE POLICY "Employers can update own jobs" ON public.jobs FOR UPDATE TO authenticated 
+  USING (auth.uid() = posted_by AND (EXISTS (SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.account_type IN ('employer', 'job_poster'))));
+CREATE POLICY "Employers can delete own jobs" ON public.jobs FOR DELETE TO authenticated 
+  USING (auth.uid() = posted_by AND (EXISTS (SELECT 1 FROM public.profiles WHERE profiles.id = auth.uid() AND profiles.account_type IN ('employer', 'job_poster'))));
+
+-- 4. SWIPES
+ALTER TABLE public.swipes ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users manage own swipes" ON public.swipes;
+CREATE POLICY "Users manage own swipes" ON public.swipes FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- 5. APPLICATIONS
+ALTER TABLE public.applications ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Candidates can view own applications" ON public.applications;
+DROP POLICY IF EXISTS "Candidates can create applications" ON public.applications;
+DROP POLICY IF EXISTS "Company members can view applications" ON public.applications;
+DROP POLICY IF EXISTS "Company members can update applications" ON public.applications;
+DROP POLICY IF EXISTS "Users manage own applications" ON public.applications;
+
+CREATE POLICY "Users manage own applications" ON public.applications FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Candidates can view own applications" ON public.applications FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Candidates can create applications" ON public.applications FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Company members can view applications" ON public.applications FOR SELECT USING (EXISTS (SELECT 1 FROM public.jobs j JOIN public.company_members cm ON j.company_id = cm.company_id WHERE j.id = applications.job_id AND cm.user_id = auth.uid()));
+CREATE POLICY "Company members can update applications" ON public.applications FOR UPDATE USING (EXISTS (SELECT 1 FROM public.jobs j JOIN public.company_members cm ON j.company_id = cm.company_id WHERE j.id = applications.job_id AND cm.user_id = auth.uid()));
+
+-- 6. NOTIFICATIONS
+ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users view own notifications" ON public.notifications;
+DROP POLICY IF EXISTS "Users update own notifications" ON public.notifications;
+DROP POLICY IF EXISTS "Users delete own notifications" ON public.notifications;
+DROP POLICY IF EXISTS "System can insert notifications" ON public.notifications;
+
+CREATE POLICY "Users view own notifications" ON public.notifications FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Users update own notifications" ON public.notifications FOR UPDATE TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Users delete own notifications" ON public.notifications FOR DELETE TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "System can insert notifications" ON public.notifications FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id OR has_role(auth.uid(), 'admin'));
+
+-- 7. APPLICATION DOCUMENTS
+ALTER TABLE public.application_documents ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users manage own documents" ON public.application_documents;
+CREATE POLICY "Users manage own documents" ON public.application_documents FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+-- 8. JOB VIEWS
+ALTER TABLE public.job_views ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users insert own job views" ON public.job_views;
+DROP POLICY IF EXISTS "Users see own job views" ON public.job_views;
+DROP POLICY IF EXISTS "Admins see all job views" ON public.job_views;
+
+CREATE POLICY "Users insert own job views" ON public.job_views FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users see own job views" ON public.job_views FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Admins see all job views" ON public.job_views FOR SELECT TO authenticated USING (has_role(auth.uid(), 'admin'));
+
+-- 9. CV ANALYSES
+ALTER TABLE public.cv_analyses ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users view own analyses" ON public.cv_analyses;
+DROP POLICY IF EXISTS "Admins view all analyses" ON public.cv_analyses;
+DROP POLICY IF EXISTS "Users insert own analyses" ON public.cv_analyses;
+
+CREATE POLICY "Users view own analyses" ON public.cv_analyses FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Admins view all analyses" ON public.cv_analyses FOR SELECT TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Users insert own analyses" ON public.cv_analyses FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+-- 10. FEATURE FLAGS
+ALTER TABLE public.feature_flags ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Anyone authenticated can read flags" ON public.feature_flags;
+DROP POLICY IF EXISTS "Admins manage flags" ON public.feature_flags;
+
+CREATE POLICY "Anyone authenticated can read flags" ON public.feature_flags FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admins manage flags" ON public.feature_flags FOR ALL TO authenticated USING (public.has_role(auth.uid(), 'admin')) WITH CHECK (public.has_role(auth.uid(), 'admin'));
+
+-- 11. REVAMP REQUESTS
+ALTER TABLE public.revamp_requests ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users create own revamp requests" ON public.revamp_requests;
+DROP POLICY IF EXISTS "Users view own revamp requests" ON public.revamp_requests;
+DROP POLICY IF EXISTS "Admins update revamp requests" ON public.revamp_requests;
+
+CREATE POLICY "Users create own revamp requests" ON public.revamp_requests FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users view own revamp requests" ON public.revamp_requests FOR SELECT TO authenticated USING (auth.uid() = user_id OR public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins update revamp requests" ON public.revamp_requests FOR UPDATE TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+
+-- 12. QUICK JOBS
+ALTER TABLE public.quick_jobs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users create own quick jobs" ON public.quick_jobs;
+DROP POLICY IF EXISTS "Users update own quick jobs" ON public.quick_jobs;
+DROP POLICY IF EXISTS "Authenticated view approved quick jobs" ON public.quick_jobs;
+DROP POLICY IF EXISTS "Admins delete quick jobs" ON public.quick_jobs;
+
+CREATE POLICY "Users create own quick jobs" ON public.quick_jobs FOR INSERT TO authenticated WITH CHECK (auth.uid() = posted_by OR auth.uid() = poster_id);
+CREATE POLICY "Users update own quick jobs" ON public.quick_jobs FOR UPDATE TO authenticated USING (auth.uid() = posted_by OR auth.uid() = poster_id OR has_role(auth.uid(), 'admin'::app_role));
+CREATE POLICY "Authenticated view approved quick jobs" ON public.quick_jobs FOR SELECT TO authenticated USING (((status = 'approved'::text) AND (is_active = true)) OR auth.uid() = posted_by OR auth.uid() = poster_id OR has_role(auth.uid(), 'admin'::app_role));
+CREATE POLICY "Admins delete quick jobs" ON public.quick_jobs FOR DELETE TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+
+-- 13. COMPANIES
+ALTER TABLE public.companies ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Companies are viewable by everyone" ON public.companies;
+CREATE POLICY "Companies are viewable by everyone" ON public.companies FOR SELECT USING (true);
+
+-- 14. COMPANY MEMBERS
+ALTER TABLE public.company_members ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Company members are viewable by everyone" ON public.company_members;
+DROP POLICY IF EXISTS "Company admins can manage members" ON public.company_members;
+DROP POLICY IF EXISTS "Company admins can insert members" ON public.company_members;
+DROP POLICY IF EXISTS "Company admins can update members" ON public.company_members;
+DROP POLICY IF EXISTS "Company admins can delete members" ON public.company_members;
+
+CREATE POLICY "Company members are viewable by everyone" ON public.company_members FOR SELECT USING (true);
+CREATE POLICY "Company admins can insert members" ON public.company_members FOR INSERT WITH CHECK (EXISTS (SELECT 1 FROM public.company_members cm WHERE cm.company_id = company_members.company_id AND cm.user_id = auth.uid() AND cm.role = 'admin'));
+CREATE POLICY "Company admins can update members" ON public.company_members FOR UPDATE USING (EXISTS (SELECT 1 FROM public.company_members cm WHERE cm.company_id = company_members.company_id AND cm.user_id = auth.uid() AND cm.role = 'admin'));
+CREATE POLICY "Company admins can delete members" ON public.company_members FOR DELETE USING (EXISTS (SELECT 1 FROM public.company_members cm WHERE cm.company_id = company_members.company_id AND cm.user_id = auth.uid() AND cm.role = 'admin'));
+
+-- 15. JOB ASSIGNMENTS
+ALTER TABLE public.job_assignments ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Job poster can manage assignments" ON public.job_assignments;
+DROP POLICY IF EXISTS "Assigned users can view own assignments" ON public.job_assignments;
+
+CREATE POLICY "Job poster can manage assignments" ON public.job_assignments FOR ALL TO authenticated USING (EXISTS (SELECT 1 FROM public.jobs j WHERE j.id = job_assignments.job_id AND j.posted_by = auth.uid()));
+CREATE POLICY "Assigned users can view own assignments" ON public.job_assignments FOR SELECT TO authenticated USING (auth.uid() = user_id);
+
+-- 16. CV REQUESTS
+ALTER TABLE public.cv_requests ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Employers can insert cv requests" ON public.cv_requests;
+DROP POLICY IF EXISTS "Users can view own cv requests" ON public.cv_requests;
+
+CREATE POLICY "Employers can insert cv requests" ON public.cv_requests FOR INSERT TO authenticated WITH CHECK (auth.uid() = employer_id);
+CREATE POLICY "Users can view own cv requests" ON public.cv_requests FOR SELECT TO authenticated USING (auth.uid() = candidate_id OR auth.uid() = employer_id);
+
+-- 17. HIGHLIGHTED CANDIDATES
+ALTER TABLE public.highlighted_candidates ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Employers manage own highlights" ON public.highlighted_candidates;
+
+CREATE POLICY "Employers manage own highlights" ON public.highlighted_candidates FOR ALL TO authenticated USING (auth.uid() = employer_id);
+
+-- 18. STORAGE POLICIES
+DROP POLICY IF EXISTS "Users upload own CV" ON storage.objects;
+DROP POLICY IF EXISTS "Users read own CV" ON storage.objects;
+DROP POLICY IF EXISTS "Users update own CV" ON storage.objects;
+DROP POLICY IF EXISTS "Users delete own CV" ON storage.objects;
+DROP POLICY IF EXISTS "Users read own app-docs" ON storage.objects;
+DROP POLICY IF EXISTS "Users insert own app-docs" ON storage.objects;
+DROP POLICY IF EXISTS "Users update own app-docs" ON storage.objects;
+DROP POLICY IF EXISTS "Users delete own app-docs" ON storage.objects;
+DROP POLICY IF EXISTS "Partners and admins upload to cvs" ON storage.objects;
+DROP POLICY IF EXISTS "Partners and admins read cvs" ON storage.objects;
+DROP POLICY IF EXISTS "Users read own cvs folder" ON storage.objects;
+
+CREATE POLICY "Users upload own CV" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'cvs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users read own CV" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'cvs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users update own CV" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id = 'cvs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users delete own CV" ON storage.objects FOR DELETE TO authenticated USING (bucket_id = 'cvs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users read own app-docs" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'app-docs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users insert own app-docs" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'app-docs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users update own app-docs" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id = 'app-docs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users delete own app-docs" ON storage.objects FOR DELETE TO authenticated USING (bucket_id = 'app-docs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Partners and admins upload to cvs" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'cvs' AND (public.has_role(auth.uid(), 'admin'::app_role) OR public.has_role(auth.uid(), 'partner'::app_role)));
+CREATE POLICY "Partners and admins read cvs" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'cvs' AND (public.has_role(auth.uid(), 'admin'::app_role) OR public.has_role(auth.uid(), 'partner'::app_role)));
+CREATE POLICY "Users read own cvs folder" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'cvs' AND auth.uid()::text = (storage.foldername(name))[1]);
+
+-- 1. Job Assignments Table
+-- Links specific team members to specific jobs with a permission level
+CREATE TABLE IF NOT EXISTS public.job_assignments (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  job_id uuid REFERENCES public.jobs(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  permission_level text NOT NULL DEFAULT 'read', -- 'read' | 'edit'
+  assigned_by uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
+  UNIQUE(job_id, user_id)
+);
+
+ALTER TABLE public.job_assignments ENABLE ROW LEVEL SECURITY;
+
+-- Job poster (admin/hiring manager) can manage assignments
+CREATE POLICY "Job poster can manage assignments" ON public.job_assignments
+  FOR ALL TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      WHERE j.id = job_assignments.job_id AND j.posted_by = auth.uid()
+    )
+  );
+
+-- Any assigned user can view their own assignments
+CREATE POLICY "Assigned users can view own assignments" ON public.job_assignments
+  FOR SELECT TO authenticated
+  USING (auth.uid() = user_id);
+
+
+-- 2. CV Requests Table
+-- Tracks when an employer requests a candidate's CV via Head Hunt
+CREATE TABLE IF NOT EXISTS public.cv_requests (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  candidate_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  employer_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  status text NOT NULL DEFAULT 'pending', -- 'pending' | 'shared' | 'declined'
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
+  UNIQUE(candidate_id, employer_id)
+);
+
+ALTER TABLE public.cv_requests ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Employers can insert cv requests" ON public.cv_requests
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = employer_id);
+
+CREATE POLICY "Users can view own cv requests" ON public.cv_requests
+  FOR SELECT TO authenticated USING (auth.uid() = candidate_id OR auth.uid() = employer_id);
+
+
+-- 3. Highlighted Candidates Table
+CREATE TABLE IF NOT EXISTS public.highlighted_candidates (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  candidate_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  employer_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  note text,
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
+  UNIQUE(candidate_id, employer_id)
+);
+
+ALTER TABLE public.highlighted_candidates ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Employers manage own highlights" ON public.highlighted_candidates
+  FOR ALL TO authenticated USING (auth.uid() = employer_id);
+
+
+-- 1. Create Companies Table
+CREATE TABLE IF NOT EXISTS public.companies (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  name text NOT NULL,
+  logo_url text,
+  industry text,
+  subscription_tier text DEFAULT 'free',
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Enable RLS
+ALTER TABLE public.companies ENABLE ROW LEVEL SECURITY;
+
+-- Everyone can read companies
+CREATE POLICY "Companies are viewable by everyone" ON public.companies
+  FOR SELECT USING (true);
+
+-- 2. Create Company Members Table
+CREATE TABLE IF NOT EXISTS public.company_members (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  company_id uuid REFERENCES public.companies(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
+  role text DEFAULT 'recruiter' NOT NULL, -- 'admin', 'recruiter', 'hiring_manager'
+  invited_by uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
+  UNIQUE(company_id, user_id)
+);
+
+-- Enable RLS
+ALTER TABLE public.company_members ENABLE ROW LEVEL SECURITY;
+
+-- Everyone can view members (needed to show who posted a job)
+CREATE POLICY "Company members are viewable by everyone" ON public.company_members
+  FOR SELECT USING (true);
+
+-- Users can insert/update if they are an admin of that company
+CREATE POLICY "Company admins can manage members" ON public.company_members
+  FOR ALL USING (
+    EXISTS (
+      SELECT 1 FROM public.company_members cm 
+      WHERE cm.company_id = company_members.company_id 
+      AND cm.user_id = auth.uid() 
+      AND cm.role = 'admin'
+    )
+  );
+
+-- 3. Update Jobs Table
+-- Add company_id and application_type columns
+ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES public.companies(id) ON DELETE SET NULL;
+ALTER TABLE public.jobs ADD COLUMN IF NOT EXISTS application_type text DEFAULT 'email';
+
+-- 4. Update Applications Table (Since it already exists)
+ALTER TABLE public.applications ADD COLUMN IF NOT EXISTS merged_cv_path text;
+
+-- Drop new policies if they already exist so we can safely re-run this script
+DROP POLICY IF EXISTS "Candidates can view own applications" ON public.applications;
+DROP POLICY IF EXISTS "Candidates can create applications" ON public.applications;
+DROP POLICY IF EXISTS "Company members can view applications" ON public.applications;
+DROP POLICY IF EXISTS "Company members can update applications" ON public.applications;
+
+-- Enable RLS
+ALTER TABLE public.applications ENABLE ROW LEVEL SECURITY;
+
+-- Candidates can view their own applications
+CREATE POLICY "Candidates can view own applications" ON public.applications
+  FOR SELECT USING (auth.uid() = user_id);
+
+-- Candidates can insert their own applications
+CREATE POLICY "Candidates can create applications" ON public.applications
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+-- Company members can view applications for their jobs
+CREATE POLICY "Company members can view applications" ON public.applications
+  FOR SELECT USING (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      JOIN public.company_members cm ON j.company_id = cm.company_id
+      WHERE j.id = applications.job_id
+      AND cm.user_id = auth.uid()
+    )
+  );
+
+-- Company members can update application status
+CREATE POLICY "Company members can update applications" ON public.applications
+  FOR UPDATE USING (
+    EXISTS (
+      SELECT 1 FROM public.jobs j
+      JOIN public.company_members cm ON j.company_id = cm.company_id
+      WHERE j.id = applications.job_id
+      AND cm.user_id = auth.uid()
+    )
+  );
+
+-- Enable realtime for applications (to trigger UI updates)
+alter publication supabase_realtime add table public.applications;
+
+
+-- 1. Ensure all required roles exist in the app_role enum
+-- (Postgres requires DO blocks to catch the duplicate_object exception when altering types)
+DO $$ BEGIN
+  ALTER TYPE public.app_role ADD VALUE IF NOT EXISTS 'job_poster';
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TYPE public.app_role ADD VALUE IF NOT EXISTS 'employer';
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TYPE public.app_role ADD VALUE IF NOT EXISTS 'partner';
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- 2. Add policies to allow Admins to manage user roles
+-- (We drop them first just in case you need to re-run this script later)
+DROP POLICY IF EXISTS "Admins manage roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Admins insert roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Admins update roles" ON public.user_roles;
+DROP POLICY IF EXISTS "Admins delete roles" ON public.user_roles;
+
+CREATE POLICY "Admins insert roles" ON public.user_roles
+  FOR INSERT TO authenticated
+  WITH CHECK (public.has_role(auth.uid(), 'admin'));
+
+CREATE POLICY "Admins update roles" ON public.user_roles
+  FOR UPDATE TO authenticated
+  USING (public.has_role(auth.uid(), 'admin'));
+
+CREATE POLICY "Admins delete roles" ON public.user_roles
+  FOR DELETE TO authenticated
+  USING (public.has_role(auth.uid(), 'admin'));
+
+-- 3. (Recommended) Allow Admins to also update profiles
+-- Since admins only had "SELECT" permissions on profiles in your schema
+DROP POLICY IF EXISTS "Admins update all profiles" ON public.profiles;
+
+CREATE POLICY "Admins update all profiles" ON public.profiles
+  FOR UPDATE TO authenticated
+  USING (public.has_role(auth.uid(), 'admin'));
+
+-- Drop the policy causing infinite recursion
+DROP POLICY IF EXISTS "Employers view active candidate profiles" ON public.profiles;
+
+-- Create a security definer function to get the current user's account_type safely without triggering RLS
+CREATE OR REPLACE FUNCTION public.get_my_account_type()
+RETURNS text
+LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public AS $$
+  SELECT account_type FROM public.profiles WHERE id = auth.uid();
+$$;
+
+-- Recreate the policy without recursion using the function
+CREATE POLICY "Employers view active candidate profiles"
+  ON public.profiles
+  FOR SELECT
+  TO authenticated
+  USING (
+    public.get_my_account_type() = 'employer'
+    AND subscription_status = 'active'
+    AND (account_type IS NULL OR account_type NOT IN ('employer', 'quick_jobs'))
+    AND id != auth.uid()
+  );
+
+-- Allow employers (account_type = 'employer') to read limited candidate profiles
+-- for the Head Hunt feature. Only exposes users with active subscriptions.
+-- Employers cannot see each other's profiles or B2B accounts.
+
+-- Create a security definer function to get the current user's account_type safely without triggering RLS
+CREATE OR REPLACE FUNCTION public.get_my_account_type()
+RETURNS text
+LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public AS $$
+  SELECT account_type FROM public.profiles WHERE id = auth.uid();
+$$;
+
+CREATE POLICY "Employers view active candidate profiles"
+  ON public.profiles
+  FOR SELECT
+  TO authenticated
+  USING (
+    -- The viewer must be an employer (uses security definer to avoid infinite recursion)
+    public.get_my_account_type() = 'employer'
+    -- The row being read must be a regular job-seeker with an active subscription
+    AND subscription_status = 'active'
+    AND (account_type IS NULL OR account_type NOT IN ('employer', 'quick_jobs'))
+    AND id != auth.uid()
+  );
+
+-- Add preferred_gender to quick_jobs
+ALTER TABLE public.quick_jobs ADD COLUMN IF NOT EXISTS preferred_gender text DEFAULT 'Any';
+
+
+-- Add career_summary column to profiles table
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS career_summary text;
+
+-- Drop the policy causing infinite recursion
+DROP POLICY IF EXISTS "Employers view active candidate profiles" ON public.profiles;
+
+-- Create a security definer function to get the current user's account_type safely without triggering RLS
+CREATE OR REPLACE FUNCTION public.get_my_account_type()
+RETURNS text
+LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public AS $$
+  SELECT account_type FROM public.profiles WHERE id = auth.uid();
+$$;
+
+-- Recreate the policy without recursion using the function
+CREATE POLICY "Employers view active candidate profiles"
+  ON public.profiles
+  FOR SELECT
+  TO authenticated
+  USING (
+    public.get_my_account_type() = 'employer'
+    AND subscription_status = 'active'
+    AND (account_type IS NULL OR account_type NOT IN ('employer', 'quick_jobs'))
+    AND id != auth.uid()
+  );
+
+DO $$ BEGIN
+  CREATE POLICY "Employers view active candidate profiles"
+    ON public.profiles FOR SELECT TO authenticated
+    USING (
+      EXISTS (
+        SELECT 1 FROM public.profiles AS viewer
+        WHERE viewer.id = auth.uid() AND viewer.account_type = 'employer'
+      )
+      AND subscription_status = 'active'
+      AND (account_type IS NULL OR account_type NOT IN ('employer', 'quick_jobs'))
+      AND id <> auth.uid()
+    );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS account_type text DEFAULT 'premium';
+ALTER TABLE public.revamp_requests ADD COLUMN IF NOT EXISTS revamp_level text;
+ALTER TABLE public.revamp_requests ADD COLUMN IF NOT EXISTS revamp_amount numeric;
+
+INSERT INTO public.feature_flags (key, enabled) VALUES ('subscription_required', false) ON CONFLICT (key) DO NOTHING;
+INSERT INTO public.feature_flags (key, enabled) VALUES ('cv_revamp_payments', false) ON CONFLICT (key) DO NOTHING;
+INSERT INTO public.feature_flags (key, enabled) VALUES ('quick_jobs_payments', false) ON CONFLICT (key) DO NOTHING;
+
+-- Add revamped CV fields
+ALTER TABLE public.revamp_requests
+  ADD COLUMN IF NOT EXISTS revamped_cv_path text,
+  ADD COLUMN IF NOT EXISTS revamped_cv_filename text,
+  ADD COLUMN IF NOT EXISTS delivered_at timestamptz;
+
+-- Trigger to notify user when their revamp is delivered
+CREATE OR REPLACE FUNCTION public.notify_user_on_revamp_delivered()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.fulfilment_status = 'delivered'
+     AND (OLD.fulfilment_status IS DISTINCT FROM 'delivered') THEN
+    NEW.delivered_at := now();
+    INSERT INTO public.notifications (user_id, type, title, body)
+    VALUES (
+      NEW.user_id,
+      'revamp_delivered',
+      'Your revamped CV is ready! ✨',
+      'Your partner coach has completed your CV revamp. Open CV & Documents to view it.'
+    );
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_notify_user_on_revamp_delivered ON public.revamp_requests;
+CREATE TRIGGER trg_notify_user_on_revamp_delivered
+BEFORE UPDATE ON public.revamp_requests
+FOR EACH ROW
+EXECUTE FUNCTION public.notify_user_on_revamp_delivered();
+
+-- Storage policies on 'cvs' bucket so partners & admins can upload revamped CVs
+-- and users can read their own folder.
+DO $$ BEGIN
+  CREATE POLICY "Partners and admins upload to cvs"
+  ON storage.objects FOR INSERT TO authenticated
+  WITH CHECK (
+    bucket_id = 'cvs'
+    AND (public.has_role(auth.uid(), 'admin'::app_role)
+         OR public.has_role(auth.uid(), 'partner'::app_role))
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE POLICY "Partners and admins read cvs"
+  ON storage.objects FOR SELECT TO authenticated
+  USING (
+    bucket_id = 'cvs'
+    AND (public.has_role(auth.uid(), 'admin'::app_role)
+         OR public.has_role(auth.uid(), 'partner'::app_role))
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE POLICY "Users read own cvs folder"
+  ON storage.objects FOR SELECT TO authenticated
+  USING (
+    bucket_id = 'cvs'
+    AND auth.uid()::text = (storage.foldername(name))[1]
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+NOTIFY pgrst, 'reload schema';
+
+
+ALTER TABLE public.quick_jobs ADD COLUMN IF NOT EXISTS poster_name text;
+ALTER TABLE public.quick_jobs ADD COLUMN IF NOT EXISTS pay_amount numeric;
+ALTER TABLE public.quick_jobs ADD COLUMN IF NOT EXISTS pay_type text;
+ALTER TABLE public.quick_jobs ADD COLUMN IF NOT EXISTS date_needed date;
+ALTER TABLE public.quick_jobs ADD COLUMN IF NOT EXISTS duration text;
+ALTER TABLE public.quick_jobs ADD COLUMN IF NOT EXISTS contact_number text;
+ALTER TABLE public.quick_jobs ADD COLUMN IF NOT EXISTS posted_by uuid;
+
+UPDATE public.quick_jobs SET posted_by = poster_id WHERE posted_by IS NULL AND poster_id IS NOT NULL;
+
+-- Update RLS to allow either column to identify ownership during transition
+DROP POLICY IF EXISTS "Users create own quick jobs" ON public.quick_jobs;
+CREATE POLICY "Users create own quick jobs"
+ON public.quick_jobs FOR INSERT TO authenticated
+WITH CHECK (auth.uid() = posted_by OR auth.uid() = poster_id);
+
+DROP POLICY IF EXISTS "Users update own quick jobs" ON public.quick_jobs;
+CREATE POLICY "Users update own quick jobs"
+ON public.quick_jobs FOR UPDATE TO authenticated
+USING (auth.uid() = posted_by OR auth.uid() = poster_id OR has_role(auth.uid(), 'admin'::app_role));
+
+DROP POLICY IF EXISTS "Authenticated view approved quick jobs" ON public.quick_jobs;
+CREATE POLICY "Authenticated view approved quick jobs"
+ON public.quick_jobs FOR SELECT TO authenticated
+USING (
+  ((status = 'approved'::text) AND (is_active = true))
+  OR auth.uid() = posted_by OR auth.uid() = poster_id
+  OR has_role(auth.uid(), 'admin'::app_role)
+);
+
+-- Make poster_id nullable since code now uses posted_by
+ALTER TABLE public.quick_jobs ALTER COLUMN poster_id DROP NOT NULL;
+
+ALTER TYPE public.app_role ADD VALUE IF NOT EXISTS 'partner';
+
+CREATE TYPE public.app_role AS ENUM ('admin', 'user');
+
+CREATE TABLE public.user_roles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  role app_role NOT NULL DEFAULT 'user',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, role)
+);
+ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
+
+CREATE OR REPLACE FUNCTION public.has_role(_user_id UUID, _role app_role)
+RETURNS BOOLEAN LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = _user_id AND role = _role)
+$$;
+
+CREATE POLICY "Users see own roles" ON public.user_roles
+  FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Admins see all roles" ON public.user_roles
+  FOR SELECT TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+
+CREATE TABLE public.profiles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  full_name TEXT,
+  email TEXT,
+  phone TEXT,
+  current_location TEXT,
+  residential_address TEXT,
+  postal_address TEXT,
+  highest_education TEXT,
+  field_of_study TEXT,
+  years_experience INTEGER,
+  current_job_title TEXT,
+  skills TEXT[],
+  industries TEXT[],
+  cv_path TEXT,
+  cv_filename TEXT,
+  subscription_status TEXT NOT NULL DEFAULT 'free',
+  subscription_expires_at TIMESTAMPTZ,
+  cv_extracted_skills text[],
+  cv_extracted_experience_years integer,
+  cv_extracted_qualification text,
+  cv_summary text,
+  ai_consent_at timestamptz,
+  institution text,
+  graduation_year int,
+  preferred_industries text[] DEFAULT '{}',
+  onboarding_complete boolean NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users view own profile" ON public.profiles
+  FOR SELECT TO authenticated USING (auth.uid() = id);
+CREATE POLICY "Users update own profile" ON public.profiles
+  FOR UPDATE TO authenticated USING (auth.uid() = id);
+CREATE POLICY "Users insert own profile" ON public.profiles
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = id);
+CREATE POLICY "Admins view all profiles" ON public.profiles
+  FOR SELECT TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  INSERT INTO public.profiles (id, full_name, email)
+  VALUES (NEW.id, COALESCE(NEW.raw_user_meta_data->>'full_name', ''), NEW.email);
+  INSERT INTO public.user_roles (user_id, role) VALUES (NEW.id, 'user');
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+CREATE OR REPLACE FUNCTION public.set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN NEW.updated_at = now(); RETURN NEW; END;
+$$;
+CREATE TRIGGER profiles_updated_at BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TABLE public.jobs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  title TEXT NOT NULL,
+  company TEXT NOT NULL,
+  location TEXT NOT NULL,
+  job_type TEXT NOT NULL DEFAULT 'Full-time',
+  industry TEXT NOT NULL,
+  salary_range TEXT,
+  description TEXT NOT NULL,
+  skills TEXT[] NOT NULL DEFAULT '{}',
+  application_email TEXT,
+  posted_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  hiring_contact_name text,
+  hiring_contact_title text,
+  application_deadline timestamptz,
+  employment_type text,
+  required_years_experience integer,
+  required_qualification text,
+  required_field_of_study text[],
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.jobs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Authenticated view active jobs" ON public.jobs
+  FOR SELECT TO authenticated USING (is_active = TRUE OR public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins insert jobs" ON public.jobs
+  FOR INSERT TO authenticated WITH CHECK (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins update jobs" ON public.jobs
+  FOR UPDATE TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins delete jobs" ON public.jobs
+  FOR DELETE TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+
+CREATE TRIGGER jobs_updated_at BEFORE UPDATE ON public.jobs
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TYPE public.swipe_action AS ENUM ('like', 'save', 'pass');
+
+CREATE TABLE public.swipes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  job_id UUID NOT NULL REFERENCES public.jobs(id) ON DELETE CASCADE,
+  action swipe_action NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, job_id)
+);
+ALTER TABLE public.swipes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users manage own swipes" ON public.swipes
+  FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+CREATE TYPE public.application_status AS ENUM ('draft', 'submitted');
+
+CREATE TABLE public.applications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  job_id UUID NOT NULL REFERENCES public.jobs(id) ON DELETE CASCADE,
+  status application_status NOT NULL DEFAULT 'draft',
+  cover_letter TEXT,
+  submitted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, job_id)
+);
+ALTER TABLE public.applications ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users manage own applications" ON public.applications
+  FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+CREATE TRIGGER applications_updated_at BEFORE UPDATE ON public.applications
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TABLE public.notifications (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  type text NOT NULL,
+  title text NOT NULL,
+  body text,
+  job_id uuid,
+  read boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users view own notifications" ON public.notifications
+  FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Users update own notifications" ON public.notifications
+  FOR UPDATE TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Users delete own notifications" ON public.notifications
+  FOR DELETE TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "System can insert notifications" ON public.notifications
+  FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = user_id OR has_role(auth.uid(), 'admin'));
+
+CREATE OR REPLACE FUNCTION public.notify_matching_users_on_job()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF NEW.is_active = true THEN
+    INSERT INTO public.notifications (user_id, type, title, body, job_id)
+    SELECT p.id, 'new_match', 'New job match: ' || NEW.title,
+           NEW.company || ' · ' || NEW.location, NEW.id
+    FROM public.profiles p
+    WHERE p.skills IS NOT NULL AND array_length(p.skills, 1) > 0
+      AND EXISTS (
+        SELECT 1 FROM unnest(p.skills) ps JOIN unnest(NEW.skills) js
+        ON lower(trim(ps)) = lower(trim(js))
+      );
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_notify_matching_users
+  AFTER INSERT ON public.jobs
+  FOR EACH ROW EXECUTE FUNCTION public.notify_matching_users_on_job();
+
+CREATE TABLE public.application_documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  label text NOT NULL,
+  storage_path text NOT NULL,
+  filename text NOT NULL,
+  mime_type text,
+  size_bytes integer,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.application_documents ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users manage own documents" ON public.application_documents
+  FOR ALL TO authenticated USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+
+CREATE TABLE public.job_views (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.job_views ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users insert own job views" ON public.job_views
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users see own job views" ON public.job_views
+  FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Admins see all job views" ON public.job_views
+  FOR SELECT TO authenticated USING (has_role(auth.uid(), 'admin'));
+
+CREATE TABLE public.cv_analyses (
+  id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID NOT NULL,
+  score INTEGER NOT NULL,
+  keyword_score INTEGER NOT NULL DEFAULT 0,
+  structure_score INTEGER NOT NULL DEFAULT 0,
+  readability_score INTEGER NOT NULL DEFAULT 0,
+  formatting_score INTEGER NOT NULL DEFAULT 0,
+  feedback TEXT,
+  cv_filename TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.cv_analyses ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users view own analyses" ON public.cv_analyses
+  FOR SELECT TO authenticated USING (auth.uid() = user_id);
+CREATE POLICY "Admins view all analyses" ON public.cv_analyses
+  FOR SELECT TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Users insert own analyses" ON public.cv_analyses
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE INDEX idx_cv_analyses_user ON public.cv_analyses(user_id, created_at DESC);
+
+CREATE TABLE public.feature_flags (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  key text NOT NULL UNIQUE,
+  enabled boolean NOT NULL DEFAULT false,
+  description text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.feature_flags ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Anyone authenticated can read flags" ON public.feature_flags
+  FOR SELECT TO authenticated USING (true);
+CREATE POLICY "Admins manage flags" ON public.feature_flags
+  FOR ALL TO authenticated
+  USING (public.has_role(auth.uid(), 'admin'))
+  WITH CHECK (public.has_role(auth.uid(), 'admin'));
+CREATE TRIGGER feature_flags_updated_at BEFORE UPDATE ON public.feature_flags
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+INSERT INTO public.feature_flags (key, enabled, description) VALUES
+  ('beta_mode', true, 'Show beta banner and lock premium features'),
+  ('payments_enabled', false, 'Enable real payment processing'),
+  ('revamp_enabled', true, 'Allow users to request CV revamp service'),
+  ('quick_jobs', false, 'Enable Quick Jobs feature for all users')
+ON CONFLICT (key) DO NOTHING;
+
+CREATE TABLE public.revamp_requests (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL,
+  current_job_title text,
+  target_job_title text,
+  notes text,
+  cv_path text,
+  payment_status text NOT NULL DEFAULT 'pending',
+  fulfilment_status text NOT NULL DEFAULT 'new',
+  partner_notes text,
+  attachment_paths text[] DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.revamp_requests ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users create own revamp requests" ON public.revamp_requests
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users view own revamp requests" ON public.revamp_requests
+  FOR SELECT TO authenticated
+  USING (auth.uid() = user_id OR public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins update revamp requests" ON public.revamp_requests
+  FOR UPDATE TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+CREATE TRIGGER revamp_requests_updated_at BEFORE UPDATE ON public.revamp_requests
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TABLE public.quick_jobs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  poster_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  category text NOT NULL,
+  description text NOT NULL,
+  location text,
+  budget text,
+  contact text,
+  details jsonb DEFAULT '{}'::jsonb,
+  status text NOT NULL DEFAULT 'pending',
+  payment_status text NOT NULL DEFAULT 'pending',
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.quick_jobs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Authenticated view approved quick jobs" ON public.quick_jobs
+  FOR SELECT TO authenticated
+  USING ((status = 'approved' AND is_active = true) OR auth.uid() = poster_id OR public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Users create own quick jobs" ON public.quick_jobs
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = poster_id);
+CREATE POLICY "Users update own quick jobs" ON public.quick_jobs
+  FOR UPDATE TO authenticated USING (auth.uid() = poster_id OR public.has_role(auth.uid(), 'admin'));
+CREATE POLICY "Admins delete quick jobs" ON public.quick_jobs
+  FOR DELETE TO authenticated USING (public.has_role(auth.uid(), 'admin'));
+CREATE TRIGGER quick_jobs_updated_at BEFORE UPDATE ON public.quick_jobs
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+INSERT INTO storage.buckets (id, name, public) VALUES ('cvs', 'cvs', false) ON CONFLICT (id) DO NOTHING;
+INSERT INTO storage.buckets (id, name, public) VALUES ('app-docs', 'app-docs', false) ON CONFLICT (id) DO NOTHING;
+
+CREATE POLICY "Users upload own CV" ON storage.objects FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'cvs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users read own CV" ON storage.objects FOR SELECT TO authenticated
+  USING (bucket_id = 'cvs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users update own CV" ON storage.objects FOR UPDATE TO authenticated
+  USING (bucket_id = 'cvs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users delete own CV" ON storage.objects FOR DELETE TO authenticated
+  USING (bucket_id = 'cvs' AND auth.uid()::text = (storage.foldername(name))[1]);
+
+CREATE POLICY "Users read own app-docs" ON storage.objects FOR SELECT TO authenticated
+  USING (bucket_id = 'app-docs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users insert own app-docs" ON storage.objects FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'app-docs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users update own app-docs" ON storage.objects FOR UPDATE TO authenticated
+  USING (bucket_id = 'app-docs' AND auth.uid()::text = (storage.foldername(name))[1]);
+CREATE POLICY "Users delete own app-docs" ON storage.objects FOR DELETE TO authenticated
+  USING (bucket_id = 'app-docs' AND auth.uid()::text = (storage.foldername(name))[1]);
+
+REVOKE EXECUTE ON FUNCTION public.has_role(UUID, app_role) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.handle_new_user() FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.set_updated_at() FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.notify_matching_users_on_job() FROM PUBLIC, anon, authenticated;
