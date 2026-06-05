@@ -85,7 +85,39 @@ export const BottomNav = () => {
     };
     checkQuickJobs();
 
-    return () => { supabase.removeChannel(ch); };
+    const qjCh = supabase
+      .channel("quick-jobs-alerts")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "quick_jobs" },
+        (payload) => {
+          const newJob = payload.new as any;
+          if (newJob.status === "approved") {
+            setQuickJobsGlow(true);
+            setQuickJobsPulse(true);
+            setTimeout(() => setQuickJobsPulse(false), 4000);
+          }
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "quick_jobs" },
+        (payload) => {
+          const updatedJob = payload.new as any;
+          // If status transitioned to approved
+          if (updatedJob.status === "approved") {
+            setQuickJobsGlow(true);
+            setQuickJobsPulse(true);
+            setTimeout(() => setQuickJobsPulse(false), 4000);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(ch);
+      supabase.removeChannel(qjCh);
+    };
   }, [user]);
 
   const { navStyle } = useApp();

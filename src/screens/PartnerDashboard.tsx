@@ -149,6 +149,33 @@ const PartnerDashboard = () => {
   
   useEffect(() => { if (isPartner) load(); }, [isPartner]);
 
+  // Real-time listener for incoming revamp requests and coaching sessions
+  useEffect(() => {
+    if (!isPartner) return;
+
+    const channel = supabase
+      .channel("partner-dashboard-queue-realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "revamp_requests" },
+        () => {
+          load();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "interview_preps" },
+        () => {
+          load();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [isPartner]);
+
   // Real-time listener for current active Workshop request updates
   useEffect(() => {
     if (!workshopRequest?.id) return;

@@ -63,7 +63,31 @@ const CVDocuments = () => {
     if (!prof?.cv_path && !activeRevampData) navigate("/upload-cv", { replace: true });
   };
 
-  useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [user]);
+  useEffect(() => {
+    refresh();
+
+    if (!user) return;
+
+    const channel = supabase
+      .channel("candidate-cv-documents-revamp")
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "revamp_requests",
+          filter: `user_id=eq.${user.id}`
+        },
+        () => {
+          refresh();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
 
   const replaceCv = async (file: File) => {
     if (!user) return;

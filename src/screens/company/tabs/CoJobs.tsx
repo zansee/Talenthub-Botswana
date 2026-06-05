@@ -196,10 +196,24 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
       }
     };
 
+    // Real-time subscription to jobs table
+    const filterString = companyId ? `company_id=eq.${companyId}` : `posted_by=eq.${userId}`;
+    const channel = supabase
+      .channel("co-jobs-realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "jobs", filter: filterString },
+        () => {
+          loadJobs();
+        }
+      )
+      .subscribe();
+
     window.addEventListener("refresh-recruitment-data", handleLocalRefresh);
     window.addEventListener("ai-populate-job-form", handleAIPopulate);
 
     return () => {
+      supabase.removeChannel(channel);
       window.removeEventListener("refresh-recruitment-data", handleLocalRefresh);
       window.removeEventListener("ai-populate-job-form", handleAIPopulate);
     };

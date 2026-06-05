@@ -134,15 +134,26 @@ const Swipe = () => {
       .then(({ data }) => setSubscriptionStatus(data?.subscription_status ?? "free"));
   }, [user]);
 
-  const seen = new Set([
-    ...swipes.map((s) => s.job_id),
-    ...applications.map((a) => a.job_id)
-  ]);
+  const [deckRemaining, setDeckRemaining] = useState<Job[]>([]);
+
   const usingFallback = swipeJobs.length === 0 && allJobs.length > 0;
-  const sourceJobs = usingFallback ? allJobs : swipeJobs;
-  const remaining = sourceJobs.filter((j) => !seen.has(j.id));
-  const top = remaining[0];
-  const next = remaining[1];
+
+  useEffect(() => {
+    if (loading) return;
+    const seen = new Set([
+      ...swipes.map((s) => s.job_id),
+      ...applications.map((a) => a.job_id)
+    ]);
+    const sourceJobs = usingFallback ? allJobs : swipeJobs;
+    setDeckRemaining(prev => {
+      // Only set on initial load or when deck drops to empty and new jobs load, so active swiping deck stays static
+      if (prev.length > 0) return prev;
+      return sourceJobs.filter((j) => !seen.has(j.id));
+    });
+  }, [loading, swipeJobs, allJobs, swipes, applications, usingFallback]);
+
+  const top = deckRemaining[0];
+  const next = deckRemaining[1];
 
   // Log job view when a card is shown to the user on the swipe deck
   useEffect(() => {
@@ -161,6 +172,17 @@ const Swipe = () => {
   const handleSwipe = (action: "pass" | "like" | "save") => {
     if (!top) return;
     swipe(top, action);
+    setDeckRemaining(prev => prev.slice(1));
+  };
+
+  const handleUndo = async () => {
+    if (!user || swipes.length === 0) return;
+    const last = swipes[swipes.length - 1];
+    const restored = allJobs.find(j => j.id === last.job_id) || swipeJobs.find(j => j.id === last.job_id);
+    if (restored) {
+      setDeckRemaining(prev => [restored, ...prev]);
+    }
+    await undo();
   };
 
   if (loading || subscriptionStatus === null) {
@@ -266,7 +288,7 @@ const Swipe = () => {
         <button onClick={() => handleSwipe("pass")} className="w-14 h-14 rounded-full bg-card shadow-card flex items-center justify-center text-destructive hover:scale-105 transition-transform">
           <X className="w-6 h-6" strokeWidth={2.5} />
         </button>
-        <button onClick={undo} className="w-12 h-12 rounded-full bg-card shadow-card flex items-center justify-center text-warning hover:scale-105 transition-transform">
+        <button onClick={handleUndo} className="w-12 h-12 rounded-full bg-card shadow-card flex items-center justify-center text-warning hover:scale-105 transition-transform">
           <Undo2 className="w-5 h-5" strokeWidth={2.5} />
         </button>
         <button onClick={() => handleSwipe("like")} className="w-16 h-16 rounded-full bg-success shadow-card flex items-center justify-center text-success-foreground hover:scale-105 transition-transform">

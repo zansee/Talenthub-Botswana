@@ -183,6 +183,108 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  useEffect(() => {
+    setSwipeJobs(jobs.filter((j) => qualifies(j, profile)));
+  }, [jobs, profile]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    // Realtime channel for jobs
+    const jobsCh = supabase
+      .channel("app-context-jobs")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "jobs" },
+        (payload) => {
+          if (payload.eventType === "INSERT") {
+            const item = payload.new as Job;
+            if (item.is_active) {
+              setJobs(prev => {
+                if (prev.some(j => j.id === item.id)) return prev;
+                const datePart = item.application_deadline?.substring(0, 10);
+                const deadlineDate = datePart ? new Date(`${datePart}T23:59:59`) : null;
+                if (deadlineDate && deadlineDate < new Date()) return prev;
+                return [item, ...prev];
+              });
+            }
+          } else if (payload.eventType === "UPDATE") {
+            const item = payload.new as Job;
+            setJobs(prev => {
+              if (item.is_active) {
+                const datePart = item.application_deadline?.substring(0, 10);
+                const deadlineDate = datePart ? new Date(`${datePart}T23:59:59`) : null;
+                if (deadlineDate && deadlineDate < new Date()) {
+                  return prev.filter(j => j.id !== item.id);
+                }
+                if (prev.some(j => j.id === item.id)) {
+                  return prev.map(j => j.id === item.id ? item : j);
+                }
+                return [item, ...prev];
+              }
+              return prev.filter(j => j.id !== item.id);
+            });
+          } else if (payload.eventType === "DELETE") {
+            setJobs(prev => prev.filter(j => j.id !== payload.old.id));
+          }
+        }
+      )
+      .subscribe();
+
+    // Realtime channel for user's swipes
+    const swipesCh = supabase
+      .channel("app-context-swipes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "swipes", filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          if (payload.eventType === "INSERT") {
+            const item = payload.new as Swipe;
+            setSwipes(prev => {
+              if (prev.some(s => s.job_id === item.job_id)) return prev;
+              return [...prev, item];
+            });
+          } else if (payload.eventType === "UPDATE") {
+            const item = payload.new as Swipe;
+            setSwipes(prev => prev.map(s => s.job_id === item.job_id ? item : s));
+          } else if (payload.eventType === "DELETE") {
+            // swipes table primary key is (user_id, job_id)
+            setSwipes(prev => prev.filter(s => s.job_id !== (payload.old as any).job_id));
+          }
+        }
+      )
+      .subscribe();
+
+    // Realtime channel for user's applications
+    const appsCh = supabase
+      .channel("app-context-applications")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "applications", filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          if (payload.eventType === "INSERT") {
+            const item = payload.new as Application;
+            setApplications(prev => {
+              if (prev.some(a => a.job_id === item.job_id)) return prev;
+              return [...prev, item];
+            });
+          } else if (payload.eventType === "UPDATE") {
+            const item = payload.new as Application;
+            setApplications(prev => prev.map(a => a.job_id === item.job_id ? item : a));
+          } else if (payload.eventType === "DELETE") {
+            setApplications(prev => prev.filter(a => a.job_id !== (payload.old as any).job_id));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(jobsCh);
+      supabase.removeChannel(swipesCh);
+      supabase.removeChannel(appsCh);
+    };
+  }, [user]);
+
   const swipe = async (job: Job, action: Swipe["action"]) => {
     if (!user) return;
     setSwipes((s) => [...s.filter((x) => x.job_id !== job.id), { job_id: job.id, action }]);

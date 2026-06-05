@@ -121,6 +121,124 @@ const QuickJobs = () => {
     }
   }, [user?.id]);
 
+  useEffect(() => {
+    if (!user?.id || loading) return;
+
+    if (accountType === "quick_jobs") {
+      // Employer Mode realtime channels
+      const qjChannel = supabase
+        .channel("employer-quick-jobs")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "quick_jobs", filter: `posted_by=eq.${user.id}` },
+          (payload) => {
+            const updated = payload.new as any;
+            if (payload.eventType === "DELETE") {
+              setMyJobs(prev => prev.filter(j => j.id !== payload.old.id));
+              setInterestsMap(prev => {
+                const next = { ...prev };
+                delete next[payload.old.id];
+                return next;
+              });
+            } else if (payload.eventType === "INSERT") {
+              setMyJobs(prev => [updated, ...prev]);
+              setInterestsMap(prev => ({ ...prev, [updated.id]: [] }));
+            } else if (payload.eventType === "UPDATE") {
+              setMyJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
+            }
+          }
+        )
+        .subscribe();
+
+      const interestsChannel = supabase
+        .channel("employer-quick-jobs-interests")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "quick_job_interests" },
+          (payload) => {
+            if (payload.eventType === "INSERT") {
+              const item = payload.new as any;
+              setInterestsMap(prev => {
+                // Only concern ourselves if this quick job exists in our state
+                if (prev[item.quick_job_id]) {
+                  if (prev[item.quick_job_id].some((x: any) => x.id === item.id)) return prev;
+                  return {
+                    ...prev,
+                    [item.quick_job_id]: [item, ...prev[item.quick_job_id]]
+                  };
+                }
+                return prev;
+              });
+            } else if (payload.eventType === "UPDATE") {
+              const item = payload.new as any;
+              setInterestsMap(prev => {
+                if (prev[item.quick_job_id]) {
+                  return {
+                    ...prev,
+                    [item.quick_job_id]: prev[item.quick_job_id].map((x: any) => x.id === item.id ? item : x)
+                  };
+                }
+                return prev;
+              });
+            } else if (payload.eventType === "DELETE") {
+              const item = payload.old as any;
+              setInterestsMap(prev => {
+                const next = { ...prev };
+                Object.keys(next).forEach(key => {
+                  next[key] = next[key].filter((x: any) => x.id !== item.id);
+                });
+                return next;
+              });
+            }
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(qjChannel);
+        supabase.removeChannel(interestsChannel);
+      };
+    } else {
+      // Candidate Mode realtime channels
+      const candidateChannel = supabase
+        .channel("candidate-quick-jobs")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "quick_jobs" },
+          (payload) => {
+            if (payload.eventType === "INSERT") {
+              const item = payload.new as any;
+              if (item.status === "approved" && item.is_active) {
+                setJobs(prev => {
+                  if (prev.some(j => j.id === item.id)) return prev;
+                  return [item, ...prev];
+                });
+              }
+            } else if (payload.eventType === "UPDATE") {
+              const item = payload.new as any;
+              if (item.status === "approved" && item.is_active) {
+                setJobs(prev => {
+                  if (prev.some(j => j.id === item.id)) {
+                    return prev.map(j => j.id === item.id ? item : j);
+                  }
+                  return [item, ...prev];
+                });
+              } else {
+                setJobs(prev => prev.filter(j => j.id !== item.id));
+              }
+            } else if (payload.eventType === "DELETE") {
+              setJobs(prev => prev.filter(j => j.id !== payload.old.id));
+            }
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(candidateChannel);
+      };
+    }
+  }, [user?.id, accountType, loading]);
+
   const handlePass = (jobId: string) => {
     setPassedJobs(prev => {
       const next = new Set(prev);
