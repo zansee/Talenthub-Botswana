@@ -1,4 +1,23 @@
 -- Fix RLS policies for interview_preps table
+-- Create table if it does not exist (safeguards local schema resets)
+CREATE TABLE IF NOT EXISTS public.interview_preps (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    target_role TEXT,
+    interview_date TIMESTAMP WITH TIME ZONE,
+    session_scheduled_at TIMESTAMP WITH TIME ZONE,
+    meeting_link TEXT,
+    script_path TEXT,
+    attachment_paths TEXT[],
+    payment_status TEXT DEFAULT 'pending',
+    status TEXT DEFAULT 'new',
+    partner_notes TEXT,
+    delivered_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    amount NUMERIC
+);
+
 -- Ensure RLS is enabled
 ALTER TABLE public.interview_preps ENABLE ROW LEVEL SECURITY;
 

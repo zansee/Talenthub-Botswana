@@ -97,16 +97,12 @@ export const CoLiveActivity = ({ companyId, userId }: CoLiveActivityProps) => {
 
       (apps || []).forEach((app) => {
         const fullName = profilesMap[app.user_id] || "Someone";
-        const parts = fullName.split(" ");
-        const firstName = parts[0];
-        const lastInitial = parts.length > 1 ? `${parts[parts.length - 1][0]}.` : "";
-        const maskedName = `${firstName} ${lastInitial}`;
 
         pastEvents.push({
           id: app.id,
           type: "application",
           title: "New application received",
-          subtitle: `${maskedName} applied to ${jobsMap[app.job_id] || "Job Post"}`,
+          subtitle: `${fullName} applied to ${jobsMap[app.job_id] || "Job Post"}`,
           timestamp: new Date(app.created_at),
           time: formatTimeAgo(new Date(app.created_at)),
         });
@@ -115,10 +111,7 @@ export const CoLiveActivity = ({ companyId, userId }: CoLiveActivityProps) => {
       (views || []).forEach((view) => {
         // Job view might not have logged-in candidate ID if anonymous
         const fullName = profilesMap[view.user_id] || "A candidate";
-        const parts = fullName.split(" ");
-        const firstName = parts[0];
-        const lastInitial = parts.length > 1 ? `${parts[parts.length - 1][0]}.` : "";
-        const displayName = view.user_id ? `${firstName} ${lastInitial}` : "A candidate";
+        const displayName = view.user_id ? fullName : "A candidate";
 
         pastEvents.push({
           id: view.id,
@@ -175,16 +168,12 @@ export const CoLiveActivity = ({ companyId, userId }: CoLiveActivityProps) => {
               .maybeSingle();
 
             const fullName = profile?.full_name || "Someone";
-            const parts = fullName.split(" ");
-            const firstName = parts[0];
-            const lastInitial = parts.length > 1 ? `${parts[parts.length - 1][0]}.` : "";
-            const maskedName = `${firstName} ${lastInitial}`;
 
             const newEvent: ActivityEvent = {
               id: payload.new.id,
               type: "application",
               title: "New application received",
-              subtitle: `${maskedName} applied to ${job.title}`,
+              subtitle: `${fullName} applied to ${job.title}`,
               timestamp: new Date(payload.new.created_at),
               time: "Just now",
             };
@@ -217,10 +206,7 @@ export const CoLiveActivity = ({ companyId, userId }: CoLiveActivityProps) => {
                 .eq("id", payload.new.user_id)
                 .maybeSingle();
               if (profile?.full_name) {
-                const parts = profile.full_name.split(" ");
-                const firstName = parts[0];
-                const lastInitial = parts.length > 1 ? `${parts[parts.length - 1][0]}.` : "";
-                displayName = `${firstName} ${lastInitial}`;
+                displayName = profile.full_name;
               }
             }
 

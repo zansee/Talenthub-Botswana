@@ -284,6 +284,216 @@
   --forest: 165 40% 11%;
 }
 
+/* Rose Romance (Rose) */
+.theme-rose {
+  --primary: 347 77% 50%;
+  --primary-glow: 347 80% 60%;
+  --forest: 347 40% 15%;
+  --forest-foreground: 347 30% 98%;
+  --gradient-forest: linear-gradient(160deg, hsl(347 45% 8%) 0%, hsl(347 30% 15%) 100%);
+  --gradient-sage: linear-gradient(135deg, hsl(347 77% 50%) 0%, hsl(347 80% 60%) 100%);
+  --shadow-glow: 0 20px 50px -20px hsl(347 77% 50% / 0.5);
+  --accent: 347 60% 92%;
+  --accent-foreground: 347 77% 25%;
+  --ring: 347 77% 50%;
+  --background: 347 30% 98%;
+  --card: 0 0% 100%;
+  --border: 347 20% 90%;
+  --input: 347 20% 88%;
+}
+.dark .theme-rose {
+  --background: 347 45% 6%;
+  --card: 347 45% 10%;
+  --card-foreground: 347 30% 96%;
+  --foreground: 347 30% 96%;
+  --border: 347 25% 17%;
+  --input: 347 25% 17%;
+  --primary: 347 80% 60%;
+  --primary-glow: 347 80% 70%;
+  --ring: 347 80% 60%;
+  --forest: 347 45% 10%;
+}
+
+/* Amber Warmth (Amber) */
+.theme-amber {
+  --primary: 32 95% 44%;
+  --primary-glow: 32 95% 54%;
+  --forest: 32 40% 15%;
+  --forest-foreground: 32 30% 98%;
+  --gradient-forest: linear-gradient(160deg, hsl(32 45% 8%) 0%, hsl(32 30% 15%) 100%);
+  --gradient-sage: linear-gradient(135deg, hsl(32 95% 44%) 0%, hsl(32 95% 54%) 100%);
+  --shadow-glow: 0 20px 50px -20px hsl(32 95% 44% / 0.5);
+  --accent: 32 60% 92%;
+  --accent-foreground: 32 95% 22%;
+  --ring: 32 95% 44%;
+  --background: 32 30% 98%;
+  --card: 0 0% 100%;
+  --border: 32 20% 90%;
+  --input: 32 20% 88%;
+}
+.dark .theme-amber {
+  --background: 32 45% 6%;
+  --card: 32 45% 10%;
+  --card-foreground: 32 30% 96%;
+  --foreground: 32 30% 96%;
+  --border: 32 25% 17%;
+  --input: 32 25% 17%;
+  --primary: 32 95% 54%;
+  --primary-glow: 32 95% 64%;
+  --ring: 32 95% 54%;
+  --forest: 32 45% 10%;
+}
+
+/* Indigo Blue (Indigo) */
+.theme-indigo {
+  --primary: 245 58% 51%;
+  --primary-glow: 245 65% 61%;
+  --forest: 245 40% 15%;
+  --forest-foreground: 245 30% 98%;
+  --gradient-forest: linear-gradient(160deg, hsl(245 45% 8%) 0%, hsl(245 30% 15%) 100%);
+  --gradient-sage: linear-gradient(135deg, hsl(245 58% 51%) 0%, hsl(245 65% 61%) 100%);
+  --shadow-glow: 0 20px 50px -20px hsl(245 58% 51% / 0.5);
+  --accent: 245 60% 92%;
+  --accent-foreground: 245 58% 28%;
+  --ring: 245 58% 51%;
+  --background: 245 30% 98%;
+  --card: 0 0% 100%;
+  --border: 245 20% 90%;
+  --input: 245 20% 88%;
+}
+.dark .theme-indigo {
+  --background: 245 45% 6%;
+  --card: 245 45% 10%;
+  --card-foreground: 245 30% 96%;
+  --foreground: 245 30% 96%;
+  --border: 245 25% 17%;
+  --input: 245 25% 17%;
+  --primary: 245 65% 61%;
+  --primary-glow: 245 65% 71%;
+  --ring: 245 65% 61%;
+  --forest: 245 45% 10%;
+}
+
+/* Teal Ocean (Teal) */
+.theme-teal {
+  --primary: 192 91% 36%;
+  --primary-glow: 192 90% 46%;
+  --forest: 192 40% 15%;
+  --forest-foreground: 192 30% 98%;
+  --gradient-forest: linear-gradient(160deg, hsl(192 45% 8%) 0%, hsl(192 30% 15%) 100%);
+  --gradient-sage: linear-gradient(135deg, hsl(192 91% 36%) 0%, hsl(192 90% 46%) 100%);
+  --shadow-glow: 0 20px 50px -20px hsl(192 91% 36% / 0.5);
+  --accent: 192 60% 92%;
+  --accent-foreground: 192 91% 20%;
+  --ring: 192 91% 36%;
+  --background: 192 30% 98%;
+  --card: 0 0% 100%;
+  --border: 192 20% 90%;
+  --input: 192 20% 88%;
+}
+.dark .theme-teal {
+  --background: 192 45% 6%;
+  --card: 192 45% 10%;
+  --card-foreground: 192 30% 96%;
+  --foreground: 192 30% 96%;
+  --border: 192 25% 17%;
+  --input: 192 25% 17%;
+  --primary: 192 90% 46%;
+  --primary-glow: 192 90% 56%;
+  --ring: 192 90% 46%;
+  --forest: 192 45% 10%;
+}
+
+/* Coral Pink (Coral) */
+.theme-coral {
+  --primary: 350 89% 60%;
+  --primary-glow: 350 90% 70%;
+  --forest: 350 40% 15%;
+  --forest-foreground: 350 30% 98%;
+  --gradient-forest: linear-gradient(160deg, hsl(350 45% 8%) 0%, hsl(350 30% 15%) 100%);
+  --gradient-sage: linear-gradient(135deg, hsl(350 89% 60%) 0%, hsl(350 90% 70%) 100%);
+  --shadow-glow: 0 20px 50px -20px hsl(350 89% 60% / 0.5);
+  --accent: 350 60% 92%;
+  --accent-foreground: 350 89% 25%;
+  --ring: 350 89% 60%;
+  --background: 350 30% 98%;
+  --card: 0 0% 100%;
+  --border: 350 20% 90%;
+  --input: 350 20% 88%;
+}
+.dark .theme-coral {
+  --background: 350 45% 6%;
+  --card: 350 45% 10%;
+  --card-foreground: 350 30% 96%;
+  --foreground: 350 30% 96%;
+  --border: 350 25% 17%;
+  --input: 350 25% 17%;
+  --primary: 350 90% 70%;
+  --primary-glow: 350 90% 80%;
+  --ring: 350 90% 70%;
+  --forest: 350 45% 10%;
+}
+
+/* Slate Grey (Slate) */
+.theme-slate {
+  --primary: 215 19% 35%;
+  --primary-glow: 215 20% 45%;
+  --forest: 215 15% 15%;
+  --forest-foreground: 215 10% 98%;
+  --gradient-forest: linear-gradient(160deg, hsl(215 20% 8%) 0%, hsl(215 15% 15%) 100%);
+  --gradient-sage: linear-gradient(135deg, hsl(215 19% 35%) 0%, hsl(215 20% 45%) 100%);
+  --shadow-glow: 0 20px 50px -20px hsl(215 19% 35% / 0.5);
+  --accent: 215 20% 92%;
+  --accent-foreground: 215 19% 20%;
+  --ring: 215 19% 35%;
+  --background: 215 10% 98%;
+  --card: 0 0% 100%;
+  --border: 215 10% 90%;
+  --input: 215 10% 88%;
+}
+.dark .theme-slate {
+  --background: 215 20% 6%;
+  --card: 215 20% 10%;
+  --card-foreground: 215 10% 96%;
+  --foreground: 215 10% 96%;
+  --border: 215 15% 17%;
+  --input: 215 15% 17%;
+  --primary: 215 20% 45%;
+  --primary-glow: 215 20% 55%;
+  --ring: 215 20% 45%;
+  --forest: 215 20% 10%;
+}
+
+/* Gold Luxury (Gold) */
+.theme-gold {
+  --primary: 26 90% 37%;
+  --primary-glow: 26 90% 47%;
+  --forest: 26 40% 15%;
+  --forest-foreground: 26 30% 98%;
+  --gradient-forest: linear-gradient(160deg, hsl(26 45% 8%) 0%, hsl(26 30% 15%) 100%);
+  --gradient-sage: linear-gradient(135deg, hsl(26 90% 37%) 0%, hsl(26 90% 47%) 100%);
+  --shadow-glow: 0 20px 50px -20px hsl(26 90% 37% / 0.5);
+  --accent: 26 60% 92%;
+  --accent-foreground: 26 90% 20%;
+  --ring: 26 90% 37%;
+  --background: 26 30% 98%;
+  --card: 0 0% 100%;
+  --border: 26 20% 90%;
+  --input: 26 20% 88%;
+}
+.dark .theme-gold {
+  --background: 26 45% 6%;
+  --card: 26 45% 10%;
+  --card-foreground: 26 30% 96%;
+  --foreground: 26 30% 96%;
+  --border: 26 25% 17%;
+  --input: 26 25% 17%;
+  --primary: 26 90% 47%;
+  --primary-glow: 26 90% 57%;
+  --ring: 26 90% 47%;
+  --forest: 26 45% 10%;
+}
+
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
@@ -291,4 +501,51 @@
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* ─── Shimmer skeleton ───────────────────────────────────────────────────── */
+@keyframes th-shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.th-skeleton {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--muted-foreground) / 0.08) 50%,
+    hsl(var(--muted)) 75%
+  );
+  background-size: 800px 100%;
+  animation: th-shimmer 1.6s ease-in-out infinite;
+  border-radius: 0.5rem;
+}
+
+/* ─── Ripple button ──────────────────────────────────────────────────────── */
+@keyframes th-ripple {
+  0%   { transform: scale(0); opacity: 0.35; }
+  100% { transform: scale(1); opacity: 0; }
+}
+
+.th-ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: currentColor;
+  pointer-events: none;
+  animation: th-ripple 0.55s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* ─── Splash glow ring ───────────────────────────────────────────────────── */
+@keyframes th-glow-ring {
+  0%   { transform: scale(1);   opacity: 0.5; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+.th-glow-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  animation: th-glow-ring 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.th-glow-ring-2 { animation-delay: 0.8s; }
+.th-glow-ring-3 { animation-delay: 1.6s; }
 

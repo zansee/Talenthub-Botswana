@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Edit2, Check, X, Plus, MapPin, GraduationCap, Briefcase, Wrench, Sparkles, Loader2 } from "lucide-react";
+import { ArrowLeft, Edit2, Check, X, Plus, MapPin, GraduationCap, Briefcase, Wrench, UserCheck, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -154,9 +154,13 @@ const ProfileDetails = () => {
     if (!form.phone.trim()) { toast.error("Phone number is required."); return; }
     if (!form.current_location) { toast.error("Location is required."); return; }
     if (!form.residential_address.trim()) { toast.error("Residential address is required."); return; }
-    if (!form.highest_education) { toast.error("Highest education is required."); return; }
-    if (industries.length === 0) { toast.error("Please select at least one industry of interest."); return; }
-    if (selectedSkills.length === 0) { toast.error("Please select or add at least one skill."); return; }
+    
+    const isQuickJobPoster = profile?.account_type === "quick_jobs";
+    if (!isQuickJobPoster) {
+      if (!form.highest_education) { toast.error("Highest education is required."); return; }
+      if (industries.length === 0) { toast.error("Please select at least one industry of interest."); return; }
+      if (selectedSkills.length === 0) { toast.error("Please select or add at least one skill."); return; }
+    }
     
     if (form.graduation_year && (Number(form.graduation_year) < 1950 || Number(form.graduation_year) > 2100)) {
       toast.error("Please enter a valid graduation year between 1950 and 2100.");
@@ -174,15 +178,15 @@ const ProfileDetails = () => {
       current_location: form.current_location,
       residential_address: form.residential_address.trim(),
       postal_address: form.postal_address.trim() || null,
-      highest_education: form.highest_education,
+      highest_education: isQuickJobPoster ? (form.highest_education || null) : form.highest_education,
       field_of_study: form.field_of_study || null,
       institution: form.institution.trim() || null,
       graduation_year: form.graduation_year ? Number(form.graduation_year) : null,
       years_experience: form.years_experience ? Number(form.years_experience) : null,
       current_job_title: form.current_job_title.trim() || null,
       career_summary: form.career_summary.trim() || null,
-      skills: selectedSkills,
-      preferred_industries: industries,
+      skills: isQuickJobPoster ? (selectedSkills.length > 0 ? selectedSkills : null) : selectedSkills,
+      preferred_industries: isQuickJobPoster ? (industries.length > 0 ? industries : null) : industries,
     };
 
     try {
@@ -241,6 +245,7 @@ const ProfileDetails = () => {
     );
   }
 
+  const isQuickJobPoster = profile?.account_type === "quick_jobs";
   const fieldsOfStudyOpts = fieldsForIndustries(industries);
   const suggestedSkills = getSuggestedSkills(form.field_of_study, industries);
 
@@ -344,6 +349,7 @@ const ProfileDetails = () => {
             </div>
 
             {/* Group 2: Education & Career */}
+            {!isQuickJobPoster && (
             <div className="bg-[#0f1218] border border-white/5 rounded-3xl p-5 space-y-4">
               <h3 className="text-xs font-bold text-primary uppercase tracking-widest border-b border-white/5 pb-2">
                 2. Education & Career
@@ -420,8 +426,10 @@ const ProfileDetails = () => {
                 />
               </div>
             </div>
+            )}
 
             {/* Group 3: Interests & Skills */}
+            {!isQuickJobPoster && (
             <div className="bg-[#0f1218] border border-white/5 rounded-3xl p-5 space-y-4">
               <h3 className="text-xs font-bold text-primary uppercase tracking-widest border-b border-white/5 pb-2">
                 3. Interests & Skills
@@ -556,6 +564,7 @@ const ProfileDetails = () => {
                 </div>
               </div>
             </div>
+            )}
 
             {/* Bottom Actions */}
             <div className="flex gap-3 pt-2">
@@ -600,6 +609,7 @@ const ProfileDetails = () => {
             </div>
 
             {/* Card 2: Education & Career */}
+            {!isQuickJobPoster && (
             <div className="bg-[#0f1218] border border-white/5 rounded-3xl p-5 space-y-3.5 shadow-xl">
               <div className="flex items-center gap-2 text-primary border-b border-white/5 pb-2">
                 <GraduationCap className="w-4 h-4" />
@@ -623,8 +633,10 @@ const ProfileDetails = () => {
                 </div>
               )}
             </div>
+            )}
 
             {/* Card 3: Skills & Interests */}
+            {!isQuickJobPoster && (
             <div className="bg-[#0f1218] border border-white/5 rounded-3xl p-5 space-y-3.5 shadow-xl">
               <div className="flex items-center gap-2 text-primary border-b border-white/5 pb-2">
                 <Wrench className="w-4 h-4" />
@@ -671,6 +683,7 @@ const ProfileDetails = () => {
                 )}
               </div>
             </div>
+            )}
           </div>
         )}
       </div>

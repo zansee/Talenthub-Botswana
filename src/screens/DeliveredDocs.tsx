@@ -17,7 +17,7 @@ const DeliveredDocs = () => {
     if (!user) return;
     (async () => {
       const [r, p] = await Promise.all([
-        supabase.from("revamp_requests").select("*").eq("user_id", user.id).eq("fulfilment_status", "delivered"),
+        supabase.from("revamp_requests").select("*").eq("user_id", user.id).in("fulfilment_status", ["completed", "delivered"]),
         supabase.from("interview_preps").select("*").eq("user_id", user.id).order("created_at", { ascending: false })
       ]);
       setRevamps(r.data ?? []);

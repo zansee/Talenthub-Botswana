@@ -30,6 +30,11 @@ export type Database = {
           subscription_tier: string | null
           created_at: string
           updated_at: string
+          brand_primary_color: string | null
+          brand_secondary_color: string | null
+          brand_accent_color: string | null
+          brand_style_recipe: Json | null
+          brand_sample_post_path: string | null
         }
         Insert: {
           id?: string
@@ -46,6 +51,11 @@ export type Database = {
           subscription_tier?: string | null
           created_at?: string
           updated_at?: string
+          brand_primary_color?: string | null
+          brand_secondary_color?: string | null
+          brand_accent_color?: string | null
+          brand_style_recipe?: Json | null
+          brand_sample_post_path?: string | null
         }
         Update: {
           id?: string
@@ -62,6 +72,11 @@ export type Database = {
           subscription_tier?: string | null
           created_at?: string
           updated_at?: string
+          brand_primary_color?: string | null
+          brand_secondary_color?: string | null
+          brand_accent_color?: string | null
+          brand_style_recipe?: Json | null
+          brand_sample_post_path?: string | null
         }
         Relationships: []
       }
@@ -432,6 +447,7 @@ export type Database = {
           title: string
           updated_at: string
           required_documents: string[] | null
+          status: string | null
         }
         Insert: {
           application_deadline?: string | null
@@ -457,6 +473,7 @@ export type Database = {
           title: string
           updated_at?: string
           required_documents?: string[] | null
+          status?: string | null
         }
         Update: {
           application_deadline?: string | null
@@ -482,6 +499,7 @@ export type Database = {
           title?: string
           updated_at?: string
           required_documents?: string[] | null
+          status?: string | null
         }
         Relationships: [
           {
@@ -780,6 +798,7 @@ export type Database = {
           target_role: string | null
           type: string
           user_id: string
+          job_id: string | null
         }
         Insert: {
           amount?: number | null
@@ -797,6 +816,7 @@ export type Database = {
           target_role?: string | null
           type: string
           user_id: string
+          job_id?: string | null
         }
         Update: {
           amount?: number | null
@@ -814,8 +834,17 @@ export type Database = {
           target_role?: string | null
           type?: string
           user_id?: string
+          job_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "interview_preps_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          }
+        ]
       }
       swipes: {
         Row: {
@@ -870,6 +899,475 @@ export type Database = {
         }
         Relationships: []
       }
+      external_applications: {
+        Row: {
+          id: string
+          job_id: string
+          full_name: string
+          email: string
+          phone: string
+          cover_letter: string | null
+          cv_path: string
+          cv_filename: string
+          status: string
+          starred: boolean | null
+          recruiter_notes: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          job_id: string
+          full_name: string
+          email: string
+          phone: string
+          cover_letter?: string | null
+          cv_path: string
+          cv_filename: string
+          status?: string
+          starred?: boolean | null
+          recruiter_notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          job_id?: string
+          full_name?: string
+          email?: string
+          phone?: string
+          cover_letter?: string | null
+          cv_path?: string
+          cv_filename?: string
+          status?: string
+          starred?: boolean | null
+          recruiter_notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "external_applications_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      pre_screening_questions: {
+        Row: {
+          id: string
+          job_id: string
+          question_text: string
+          question_type: string
+          options: string[] | null
+          is_required: boolean | null
+          is_disqualifying: boolean | null
+          correct_answer: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          job_id: string
+          question_text: string
+          question_type: string
+          options?: string[] | null
+          is_required?: boolean | null
+          is_disqualifying?: boolean | null
+          correct_answer?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          job_id?: string
+          question_text?: string
+          question_type?: string
+          options?: string[] | null
+          is_required?: boolean | null
+          is_disqualifying?: boolean | null
+          correct_answer?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pre_screening_questions_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      pre_screening_answers: {
+        Row: {
+          id: string
+          job_id: string
+          application_id: string | null
+          external_application_id: string | null
+          question_id: string
+          answer_text: string
+          is_disqualified: boolean | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          job_id: string
+          application_id?: string | null
+          external_application_id?: string | null
+          question_id: string
+          answer_text: string
+          is_disqualified?: boolean | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          job_id?: string
+          application_id?: string | null
+          external_application_id?: string | null
+          question_id?: string
+          answer_text?: string
+          is_disqualified?: boolean | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pre_screening_answers_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pre_screening_answers_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "applications"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pre_screening_answers_external_application_id_fkey"
+            columns: ["external_application_id"]
+            isOneToOne: false
+            referencedRelation: "external_applications"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pre_screening_answers_question_id_fkey"
+            columns: ["question_id"]
+            isOneToOne: false
+            referencedRelation: "pre_screening_questions"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      assessments: {
+        Row: {
+          id: string
+          job_id: string
+          name: string
+          attempts_allowed: string
+          is_live_timed: boolean
+          deadline_days: number | null
+          auto_send: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          job_id: string
+          name: string
+          attempts_allowed?: string
+          is_live_timed?: boolean
+          deadline_days?: number | null
+          auto_send?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          job_id?: string
+          name?: string
+          attempts_allowed?: string
+          is_live_timed?: boolean
+          deadline_days?: number | null
+          auto_send?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "assessments_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: true
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      assessment_questions: {
+        Row: {
+          id: string
+          assessment_id: string
+          question_text: string
+          question_type: string
+          order_index: number
+          options: string[] | null
+          correct_answers: string[] | null
+          video_max_duration: number | null
+          iq_difficulty: string | null
+          iq_count: number | null
+          iq_source: string | null
+          time_limit_seconds: number | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          assessment_id: string
+          question_text: string
+          question_type: string
+          order_index?: number
+          options?: string[] | null
+          correct_answers?: string[] | null
+          video_max_duration?: number | null
+          iq_difficulty?: string | null
+          iq_count?: number | null
+          iq_source?: string | null
+          time_limit_seconds?: number | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          assessment_id?: string
+          question_text?: string
+          question_type?: string
+          order_index?: number
+          options?: string[] | null
+          correct_answers?: string[] | null
+          video_max_duration?: number | null
+          iq_difficulty?: string | null
+          iq_count?: number | null
+          iq_source?: string | null
+          time_limit_seconds?: number | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "assessment_questions_assessment_id_fkey"
+            columns: ["assessment_id"]
+            isOneToOne: false
+            referencedRelation: "assessments"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      assessment_responses: {
+        Row: {
+          id: string
+          assessment_id: string
+          application_id: string | null
+          external_application_id: string | null
+          attempt_number: number
+          answers: Json
+          score: number | null
+          completed_at: string | null
+          time_taken_seconds: number | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          assessment_id: string
+          application_id?: string | null
+          external_application_id?: string | null
+          attempt_number?: number
+          answers?: Json
+          score?: number | null
+          completed_at?: string | null
+          time_taken_seconds?: number | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          assessment_id?: string
+          application_id?: string | null
+          external_application_id?: string | null
+          attempt_number?: number
+          answers?: Json
+          score?: number | null
+          completed_at?: string | null
+          time_taken_seconds?: number | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "assessment_responses_assessment_id_fkey"
+            columns: ["assessment_id"]
+            isOneToOne: false
+            referencedRelation: "assessments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "assessment_responses_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "applications"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "assessment_responses_external_application_id_fkey"
+            columns: ["external_application_id"]
+            isOneToOne: false
+            referencedRelation: "external_applications"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      iq_question_bank: {
+        Row: {
+          id: string
+          category: string
+          question_text: string
+          options: string[]
+          correct_option_index: number
+          time_limit_seconds: number
+          difficulty: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          category: string
+          question_text: string
+          options: string[]
+          correct_option_index: number
+          time_limit_seconds?: number
+          difficulty: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          category?: string
+          question_text?: string
+          options?: string[]
+          correct_option_index?: number
+          time_limit_seconds?: number
+          difficulty?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
+      video_notes: {
+        Row: {
+          id: string
+          response_id: string
+          question_id: string
+          timestamp: number
+          note: string
+          created_by: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          response_id: string
+          question_id: string
+          timestamp: number
+          note: string
+          created_by?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          response_id?: string
+          question_id?: string
+          timestamp?: number
+          note?: string
+          created_by?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "video_notes_response_id_fkey"
+            columns: ["response_id"]
+            isOneToOne: false
+            referencedRelation: "assessment_responses"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "video_notes_question_id_fkey"
+            columns: ["question_id"]
+            isOneToOne: false
+            referencedRelation: "assessment_questions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "video_notes_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      assessment_tokens: {
+        Row: {
+          id: string
+          assessment_id: string
+          application_id: string | null
+          external_application_id: string | null
+          token: string
+          attempt_number: number
+          used_at: string | null
+          expires_at: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          assessment_id: string
+          application_id?: string | null
+          external_application_id?: string | null
+          token: string
+          attempt_number?: number
+          used_at?: string | null
+          expires_at?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          assessment_id?: string
+          application_id?: string | null
+          external_application_id?: string | null
+          token?: string
+          attempt_number?: number
+          used_at?: string | null
+          expires_at?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "assessment_tokens_assessment_id_fkey"
+            columns: ["assessment_id"]
+            isOneToOne: false
+            referencedRelation: "assessments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "assessment_tokens_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "applications"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "assessment_tokens_external_application_id_fkey"
+            columns: ["external_application_id"]
+            isOneToOne: false
+            referencedRelation: "external_applications"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -886,7 +1384,7 @@ export type Database = {
     }
     Enums: {
       app_role: "admin" | "user" | "partner"
-      application_status: "draft" | "submitted" | "reviewing" | "shortlisted" | "interview" | "hired" | "declined"
+      application_status: "draft" | "submitted" | "reviewing" | "shortlisted" | "interview" | "hired" | "declined" | "assessment_sent" | "offer" | "rejected"
       swipe_action: "like" | "save" | "pass"
     }
     CompositeTypes: {
@@ -1016,7 +1514,7 @@ export const Constants = {
   public: {
     Enums: {
       app_role: ["admin", "user", "partner"],
-      application_status: ["draft", "submitted", "reviewing", "shortlisted", "interview", "hired", "declined"],
+      application_status: ["draft", "submitted", "reviewing", "shortlisted", "interview", "hired", "declined", "assessment_sent", "offer", "rejected"],
       swipe_action: ["like", "save", "pass"],
     },
   },

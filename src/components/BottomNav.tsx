@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { Layers, Heart, FileText, User, Bell, LayoutDashboard, Zap, PlusCircle } from "lucide-react";
+import { motion } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
 import { useApp } from "@/context/AppContext";
@@ -14,10 +15,10 @@ const candidateTabs = [
   { to: "/profile", label: "Profile", icon: User },
 ];
 
-// Job posters only: Alerts + Post Job + Profile
+// Job posters only: Dashboard (showing posted jobs & interests) + Alerts + Profile
 const jobPosterTabs = [
+  { to: "/quick-jobs", label: "Post Job", icon: PlusCircle },
   { to: "/notifications", label: "Alerts", icon: Bell },
-  { to: "/quick-jobs/new", label: "Post Job", icon: PlusCircle },
   { to: "/profile", label: "Profile", icon: User },
 ];
 
@@ -37,8 +38,10 @@ export const BottomNav = () => {
   const { user, isAdmin } = useAuth();
   const [unread, setUnread] = useState(0);
   const [quickJobsGlow, setQuickJobsGlow] = useState(false);
+  const [quickJobsPulse, setQuickJobsPulse] = useState(false);
   const [accountType, setAccountType] = useState<string | null>(null);
   const [subscriptionStatus, setSubscriptionStatus] = useState<string>("free");
+  const location = useLocation();
 
   useEffect(() => {
     if (!user) { setUnread(0); return; }
@@ -75,7 +78,8 @@ export const BottomNav = () => {
         const lastViewed = localStorage.getItem("last_quick_job_view");
         if (!lastViewed || new Date(data.created_at).getTime() > Number(lastViewed)) {
           setQuickJobsGlow(true);
-          setTimeout(() => setQuickJobsGlow(false), 4000);
+          setQuickJobsPulse(true);
+          setTimeout(() => setQuickJobsPulse(false), 4000);
         }
       }
     };
@@ -130,6 +134,9 @@ export const BottomNav = () => {
     return `${base} gap-1 py-1.5 px-2 ${isActive ? "text-primary bg-primary/5" : "text-muted-foreground hover:text-foreground"}`;
   };
 
+  // Determine the active tab path for layoutId indicator
+  const activeTab = tabs.find((t) => location.pathname === t.to || location.pathname.startsWith(t.to + "/"))?.to ?? null;
+
   return (
     <nav className={getNavClass()}>
       {tabs.map(({ to, label, icon: Icon }) => (
@@ -139,6 +146,7 @@ export const BottomNav = () => {
           onClick={() => {
             if (to === "/quick-jobs") {
               setQuickJobsGlow(false);
+              setQuickJobsPulse(false);
               localStorage.setItem("last_quick_job_view", Date.now().toString());
             }
           }}
@@ -148,17 +156,26 @@ export const BottomNav = () => {
             <>
               {navStyle === "glass" ? (
                 <div className="relative flex flex-col items-center gap-0.5">
-                  {/* Frosted glass active pill — soft primary-tinted capsule */}
+                  {/* Frosted glass active pill — animated with layoutId */}
                   <div className={`relative flex items-center justify-center w-12 h-8 rounded-full transition-all duration-200 ${
                     isActive
                       ? "bg-primary/15 shadow-[inset_0_1px_1px_rgba(255,255,255,0.5),0_1px_3px_rgba(0,0,0,0.07)]"
                       : "bg-transparent"
                   }`}>
+                    {isActive && (
+                      <motion.div
+                        layoutId="tab-indicator"
+                        className="absolute inset-0 rounded-full bg-primary/20"
+                        transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                      />
+                    )}
                     <Icon
-                      className={`w-5 h-5 ${
-                        to === "/quick-jobs" && quickJobsGlow
-                          ? "text-yellow-500 fill-yellow-500 animate-pulse drop-shadow-[0_0_8px_rgba(234,179,8,0.8)]"
-                          : ""
+                      className={`w-5 h-5 relative z-10 ${
+                        to === "/quick-jobs" && quickJobsPulse
+                        ? "text-yellow-500 fill-yellow-500 animate-pulse drop-shadow-[0_0_8px_rgba(234,179,8,0.8)]"
+                        : to === "/quick-jobs" && quickJobsGlow
+                        ? "text-yellow-500 fill-yellow-500 drop-shadow-[0_0_8px_rgba(234,179,8,0.8)]"
+                        : ""
                       }`}
                       strokeWidth={isActive ? 2.5 : 1.8}
                     />
@@ -174,7 +191,13 @@ export const BottomNav = () => {
               ) : (
                 <>
                   <div className="relative flex items-center justify-center">
-                    <Icon className={`w-5 h-5 ${to === "/quick-jobs" && quickJobsGlow ? "text-yellow-500 fill-yellow-500 animate-pulse drop-shadow-[0_0_8px_rgba(234,179,8,0.8)]" : ""}`} strokeWidth={isActive ? 2.5 : 2} />
+                    <Icon className={`w-5 h-5 ${
+                      to === "/quick-jobs" && quickJobsPulse
+                        ? "text-yellow-500 fill-yellow-500 animate-pulse drop-shadow-[0_0_8px_rgba(234,179,8,0.8)]"
+                        : to === "/quick-jobs" && quickJobsGlow
+                        ? "text-yellow-500 fill-yellow-500 drop-shadow-[0_0_8px_rgba(234,179,8,0.8)]"
+                        : ""
+                    }`} strokeWidth={isActive ? 2.5 : 2} />
                     {to === "/notifications" && unread > 0 && (
                       <span className="absolute -top-1.5 -right-2 min-w-[16px] h-[16px] px-1 rounded-full bg-destructive text-destructive-foreground text-[9px] font-bold flex items-center justify-center">
                         {unread > 9 ? "9+" : unread}
@@ -183,6 +206,14 @@ export const BottomNav = () => {
                   </div>
                   {navStyle !== "minimal" && (navStyle !== "bubble" || isActive) && (
                     <span className="text-[10px] font-semibold transition-all duration-300">{label}</span>
+                  )}
+                  {/* Sliding indicator bar for classic and minimal styles */}
+                  {(navStyle === "classic" || navStyle === "minimal" || (!navStyle)) && isActive && (
+                    <motion.div
+                      layoutId="tab-indicator"
+                      className="absolute bottom-0 h-0.5 w-8 rounded-full bg-primary"
+                      transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                    />
                   )}
                 </>
               )}

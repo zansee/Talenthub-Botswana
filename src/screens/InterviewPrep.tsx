@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Sparkles, CheckCircle2, Loader2, CreditCard, Video, FileText, Paperclip, X } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Loader2, CreditCard, Video, FileText, Paperclip, X } from "lucide-react";
+import mascot from "@/assets/mascot-transparent.png";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,6 +28,7 @@ const InterviewPrep = () => {
   const [submitted, setSubmitted] = useState(false);
   const [submittedId, setSubmittedId] = useState<string | null>(null);
   const [pastApplications, setPastApplications] = useState<any[]>([]);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -80,6 +82,7 @@ const InterviewPrep = () => {
           status: "new",
           payment_status: payStatus,
           amount: payAmount,
+          job_id: selectedJobId,
         })
         .select("id")
         .single();
@@ -119,9 +122,7 @@ const InterviewPrep = () => {
         </div>
         <div className="px-6 flex-1 overflow-y-auto pb-6">
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
-              <Sparkles className="w-6 h-6 text-primary" />
-            </div>
+            <img src={mascot} alt="Teemane" className="w-14 h-14 object-contain animate-bob drop-shadow-[0_0_10px_rgba(130,200,80,0.5)]" />
             <div>
               <h1 className="text-2xl font-bold">Choose your service</h1>
               <p className="text-xs text-muted-foreground">Select the type of preparation you need</p>
@@ -157,10 +158,10 @@ const InterviewPrep = () => {
     if (submitted) {
       return (
         <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-          <div className="w-20 h-20 rounded-full bg-success/15 flex items-center justify-center">
-            <CheckCircle2 className="w-10 h-10 text-success" />
+          <div className="relative mb-2">
+            <img src={mascot} alt="Teemane" className="w-24 h-24 object-contain animate-bob drop-shadow-[0_0_16px_rgba(130,200,80,0.5)]" />
           </div>
-          <h2 className="mt-6 text-2xl font-bold">Request received!</h2>
+          <h2 className="mt-4 text-2xl font-bold">Request received!</h2>
           {submittedId && (
             <div className="mt-3 px-4 py-2 bg-primary/10 border border-primary/20 rounded-xl">
               <p className="text-xs text-muted-foreground">Your Session ID</p>
@@ -190,9 +191,7 @@ const InterviewPrep = () => {
           </button>
         </div>
         <div className="flex-1 flex flex-col items-center justify-center text-center p-6">
-          <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-            <CreditCard className="w-10 h-10 text-primary" />
-          </div>
+          <img src={mascot} alt="Teemane" className="w-24 h-24 object-contain animate-bob drop-shadow-[0_0_16px_rgba(130,200,80,0.5)] mb-2" />
           <p className="text-sm uppercase tracking-wider text-muted-foreground">{prepType === "script" ? "Custom Script" : "Virtual Coaching"}</p>
           <p className="text-4xl font-bold mt-1">P{amount}</p>
           <p className="text-xs text-muted-foreground mt-2 max-w-xs">Mock payment — payment gateway coming soon</p>
@@ -208,10 +207,10 @@ const InterviewPrep = () => {
   if (submitted) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-        <div className="w-20 h-20 rounded-full bg-success/15 flex items-center justify-center">
-          <CheckCircle2 className="w-10 h-10 text-success" />
+        <div className="relative mb-2">
+          <img src={mascot} alt="Teemane" className="w-24 h-24 object-contain animate-bob drop-shadow-[0_0_16px_rgba(130,200,80,0.5)]" />
         </div>
-        <h2 className="mt-6 text-2xl font-bold">Request received</h2>
+        <h2 className="mt-4 text-2xl font-bold">Request received</h2>
         {submittedId && (
           <div className="mt-3 px-4 py-2 bg-primary/10 border border-primary/20 rounded-xl">
             <p className="text-xs text-muted-foreground">Your Session ID</p>
@@ -246,19 +245,28 @@ const InterviewPrep = () => {
         <div className="space-y-4">
           <div>
             <Label className="mb-2 block">Target Role</Label>
-            <Input value={targetRole} onChange={(e) => setTargetRole(e.target.value)} placeholder="e.g. Senior Frontend Developer" />
+            <Input value={targetRole} onChange={(e) => { setTargetRole(e.target.value); setSelectedJobId(null); }} placeholder="e.g. Senior Frontend Developer" />
             
             {pastApplications.length > 0 && (
               <div className="mt-3">
                 <p className="text-xs text-muted-foreground mb-1">Select a role you applied for via Talenthub:</p>
                 <select 
                   className="w-full h-11 px-3 rounded-xl bg-card border border-border text-sm focus:outline-none focus:border-primary"
-                  value={targetRole}
-                  onChange={(e) => setTargetRole(e.target.value)}
+                  value={selectedJobId || ""}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSelectedJobId(val || null);
+                    if (val) {
+                      const selectedJob = pastApplications.find(j => j.id === val);
+                      if (selectedJob) setTargetRole(selectedJob.title);
+                    } else {
+                      setTargetRole("");
+                    }
+                  }}
                 >
                   <option value="">Select a role...</option>
                   {pastApplications.map(j => (
-                    <option key={j.id} value={j.title}>{j.title}</option>
+                    <option key={j.id} value={j.id}>{j.title}</option>
                   ))}
                 </select>
               </div>

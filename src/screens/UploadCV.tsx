@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, UploadCloud, FileText, Check } from "lucide-react";
+import { ArrowLeft, FileText, Check, UploadCloud } from "lucide-react";
+import mascot from "@/assets/mascot-transparent.png";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -73,16 +74,18 @@ const UploadCV = () => {
           </>
         ) : (
           <>
-            <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center">
-              <UploadCloud className="w-7 h-7 text-primary" />
-            </div>
+            <img src={mascot} alt="Teemane" className="w-16 h-16 object-contain animate-bob drop-shadow-[0_0_12px_rgba(130,200,80,0.45)]" />
             <p className="mt-4 text-sm">Tap to choose your CV</p>
-            <p className="text-[11px] text-muted-foreground mt-3">PDF, DOC, DOCX (Max 10MB)</p>
+            <p className="text-[11px] text-muted-foreground mt-1">Teemane will read & score it automatically</p>
+            <p className="text-[10px] text-muted-foreground mt-2">PDF, DOC, DOCX (Max 10MB)</p>
           </>
         )}
       </button>
 
-      <p className="text-[11px] text-center text-muted-foreground mt-4">🔒 Your CV is stored privately. Only you can access it.</p>
+      <p className="text-[11px] text-center text-muted-foreground mt-4 flex items-center justify-center gap-1.5">
+        <img src={mascot} alt="" className="w-4 h-4 object-contain" />
+        Teemane will privately parse your CV to personalize your experience.
+      </p>
 
       <Button
         onClick={onUpload}

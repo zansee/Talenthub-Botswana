@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Check, Crown, Zap } from "lucide-react";
+import { Check, Zap } from "lucide-react";
+import mascot from "@/assets/mascot-transparent.png";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/Logo";
 import { useAuth } from "@/context/AuthContext";
@@ -44,19 +45,23 @@ const Subscribe = () => {
     <div className="flex-1 flex flex-col bg-background p-6 overflow-y-auto">
       <div className="flex justify-center mt-2"><Logo size={72} /></div>
       <div className="mt-6 text-center">
-        <div className="inline-flex w-14 h-14 rounded-full bg-primary/10 items-center justify-center mb-3">
-          <Crown className="w-7 h-7 text-primary" />
+        <div className="flex justify-center mb-3">
+          <img src={mascot} alt="Teemane" className="w-24 h-24 object-contain animate-bob drop-shadow-[0_0_20px_rgba(130,200,80,0.5)]" />
         </div>
         <h1 className="text-2xl font-bold">Unlock Talenthub</h1>
         <p className="text-sm text-muted-foreground mt-2 max-w-xs mx-auto">
-          Full access to job matching, AI cover letters, CV scoring and more
+          Full access to AI-powered job matching, cover letters, CV scoring and more
         </p>
       </div>
 
       <div className="mt-5 bg-card border border-border rounded-2xl p-5 space-y-3">
         {FEATURES.map((f) => (
           <div key={f} className="flex items-center gap-2 text-sm">
-            <Check className="w-4 h-4 text-success shrink-0" /> {f}
+            <Check className="w-4 h-4 text-success shrink-0" />
+            {f}
+            {(f.toLowerCase().includes("ai") || f.toLowerCase().includes("cv scoring") || f.toLowerCase().includes("interview")) && (
+              <img src={mascot} alt="AI" className="w-4 h-4 object-contain ml-auto opacity-70" />
+            )}
           </div>
         ))}
       </div>

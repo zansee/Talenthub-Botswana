@@ -151,8 +151,8 @@ function json(obj: unknown, status = 200) {
 async function extractPdfText(bytes: Uint8Array): Promise<string> {
   const text = new TextDecoder("latin1").decode(bytes);
   const out: string[] = [];
-  // Match strings inside ( ... ) within BT/ET blocks
-  const re = /\(((?:\\.|[^()\\])*)\)\s*Tj|\[((?:\\.|[^\]\\])*)\]\s*TJ/g;
+  // Match strings inside ( ... ) within BT/ET blocks (safe, non-backtracking version)
+  const re = /\(([^)]*)\)\s*Tj|\[([^\]]*)\]\s*TJ/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const raw = m[1] ?? m[2] ?? "";

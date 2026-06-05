@@ -34,6 +34,7 @@ import { CoAnalytics } from "./tabs/CoAnalytics";
 import { CoLiveActivity } from "./tabs/CoLiveActivity";
 import { CoTeam } from "./tabs/CoTeam";
 import { CoSettings } from "./tabs/CoSettings";
+import CompanyAIAgent from "./components/CompanyAIAgent";
 
 const INDUSTRIES = [
   "Administration", "Finance & Accounting", "Procurement & Supply Chain",
@@ -436,6 +437,14 @@ export const CompanySuite = () => {
           </div>
         </main>
       </div>
+
+      <CompanyAIAgent
+        companyName={company?.name || "Corporate Space"}
+        companyId={company?.id || null}
+        userId={user!.id}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+      />
     </div>
   );
 };

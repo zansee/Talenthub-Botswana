@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Building2, Upload, AlertCircle, ShieldAlert, Loader2, Save, FileText, CheckCircle2 } from "lucide-react";
+import { Building2, Upload, AlertCircle, ShieldAlert, Loader2, Save, FileText, CheckCircle2, Palette, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,6 +30,16 @@ export const CoSettings = ({ companyId, userId, role, onCompanyUpdate }: CoSetti
   const [uploading, setUploading] = useState(false);
   const [company, setCompany] = useState<any>(null);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
+
+  // Brand Kit States
+  const [brandPrimary, setBrandPrimary] = useState("#22C55E");
+  const [brandSecondary, setBrandSecondary] = useState("#0D1117");
+  const [brandAccent, setBrandAccent] = useState("#3B82F6");
+  const [brandRecipe, setBrandRecipe] = useState<any>({});
+  const [samplePostPath, setSamplePostPath] = useState<string | null>(null);
+  const [analyzingStyle, setAnalyzingStyle] = useState(false);
+  const [savingBrand, setSavingBrand] = useState(false);
+  const styleInputRef = useRef<HTMLInputElement>(null);
 
   // Form State
   const [form, setForm] = useState({
@@ -69,6 +79,11 @@ export const CoSettings = ({ companyId, userId, role, onCompanyUpdate }: CoSetti
           founded_year: comp.founded_year?.toString() || "",
           description: comp.description || "",
         });
+        setBrandPrimary(comp.brand_primary_color || "#22C55E");
+        setBrandSecondary(comp.brand_secondary_color || "#0D1117");
+        setBrandAccent(comp.brand_accent_color || "#3B82F6");
+        setBrandRecipe(comp.brand_style_recipe || {});
+        setSamplePostPath(comp.brand_sample_post_path || null);
       }
 
       // 2. Get Audit logs
@@ -101,6 +116,226 @@ export const CoSettings = ({ companyId, userId, role, onCompanyUpdate }: CoSetti
   useEffect(() => {
     loadCompanyAndLogs();
   }, [companyId]);
+
+  const handleSaveBrandKit = async () => {
+    if (!companyId) return;
+    try {
+      setSavingBrand(true);
+      const { error } = await supabase
+        .from("companies")
+        .update({
+          brand_primary_color: brandPrimary,
+          brand_secondary_color: brandSecondary,
+          brand_accent_color: brandAccent,
+          brand_style_recipe: brandRecipe,
+          brand_sample_post_path: samplePostPath,
+        } as any)
+        .eq("id", companyId);
+
+      if (error) throw error;
+
+      await supabase.from("employer_audit_logs").insert([
+        {
+          company_id: companyId,
+          user_id: userId,
+          action_type: "update_branding",
+          description: "Updated corporate branding assets and colors",
+        },
+      ]);
+
+      toast.success("Corporate brand kit saved!");
+      onCompanyUpdate();
+      loadCompanyAndLogs();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to save brand kit.");
+    } finally {
+      setSavingBrand(false);
+    }
+  };
+
+  const extractColorsFromLogo = () => {
+    if (!company?.logo_url) {
+      toast.error("Please upload a logo first to extract colors.");
+      return;
+    }
+
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.src = company.logo_url;
+    
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      canvas.width = 50;
+      canvas.height = 50;
+      ctx.drawImage(img, 0, 0, 50, 50);
+
+      const imgData = ctx.getImageData(0, 0, 50, 50).data;
+      const colors: Record<string, number> = {};
+
+      for (let i = 0; i < imgData.length; i += 4) {
+        const r = imgData[i];
+        const g = imgData[i + 1];
+        const b = imgData[i + 2];
+        const a = imgData[i + 3];
+
+        if (a < 200) continue; 
+
+        if (r > 245 && g > 245 && b > 245) continue;
+        if (r < 15 && g < 15 && b < 15) continue;
+
+        const roundFactor = 16;
+        const rr = Math.min(255, Math.round(r / roundFactor) * roundFactor);
+        const gg = Math.min(255, Math.round(g / roundFactor) * roundFactor);
+        const bb = Math.min(255, Math.round(b / roundFactor) * roundFactor);
+        
+        const toHex = (val: number) => {
+          const h = val.toString(16);
+          return h.length === 1 ? "0" + h : h;
+        };
+        const hex = `#${toHex(rr)}${toHex(gg)}${toHex(bb)}`.toUpperCase();
+
+        colors[hex] = (colors[hex] || 0) + 1;
+      }
+
+      const sorted = Object.entries(colors).sort((a, b) => b[1] - a[1]);
+      if (sorted.length > 0) {
+        const primary = sorted[0][0];
+        setBrandPrimary(primary);
+
+        // Find an accent color that is visually distinct from the primary color
+        let accent = primary;
+        const getDistance = (c1: string, c2: string) => {
+          const r1 = parseInt(c1.slice(1, 3), 16);
+          const g1 = parseInt(c1.slice(3, 5), 16);
+          const b1 = parseInt(c1.slice(5, 7), 16);
+          const r2 = parseInt(c2.slice(1, 3), 16);
+          const g2 = parseInt(c2.slice(3, 5), 16);
+          const b2 = parseInt(c2.slice(5, 7), 16);
+          return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
+        };
+
+        for (let i = 1; i < sorted.length; i++) {
+          const candidate = sorted[i][0];
+          if (getDistance(primary, candidate) >= 80) {
+            accent = candidate;
+            break;
+          }
+        }
+
+        // Fallback to the second most dominant color if no distinct color is found
+        if (accent === primary && sorted.length > 1) {
+          accent = sorted[1][0];
+        }
+
+        setBrandAccent(accent);
+        toast.success("Successfully extracted colors from logo!");
+      } else {
+        toast.error("Could not find dominant colors in the logo.");
+      }
+    };
+
+    img.onerror = () => {
+      toast.error("Failed to load logo image for color extraction.");
+    };
+  };
+
+  const analyzeStyleSample = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setAnalyzingStyle(true);
+    try {
+      // 1. Downscale image on canvas and get JPEG blob
+      const imageBlob = await new Promise<Blob>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (event) => {
+          const img = new Image();
+          img.src = event.target?.result as string;
+          img.onload = () => {
+            const maxDim = 512;
+            let width = img.width;
+            let height = img.height;
+
+            if (width > maxDim || height > maxDim) {
+              if (width > height) {
+                height = Math.round((height * maxDim) / width);
+                width = maxDim;
+              } else {
+                width = Math.round((width * maxDim) / height);
+                height = maxDim;
+              }
+            }
+
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) { reject(new Error("Canvas context is unavailable")); return; }
+            
+            ctx.drawImage(img, 0, 0, width, height);
+            canvas.toBlob((blob) => {
+              if (blob) {
+                resolve(blob);
+              } else {
+                reject(new Error("Failed to generate image blob"));
+              }
+            }, "image/jpeg", 0.75);
+          };
+          img.onerror = () => reject(new Error("Failed to load sample image."));
+        };
+        reader.onerror = () => reject(new Error("Failed to read sample file."));
+      });
+
+      // 2. Upload the downscaled JPEG blob to brand-samples bucket
+      const fileName = `sample_${companyId!}_${Date.now()}.jpg`;
+      const { error: uploadError } = await supabase.storage
+        .from("brand-samples")
+        .upload(fileName, imageBlob, { 
+          contentType: "image/jpeg",
+          upsert: true 
+        });
+
+      if (uploadError) throw uploadError;
+      setSamplePostPath(fileName);
+
+      // 3. Get public URL for the brand sample image
+      const { data: urlData } = supabase.storage
+        .from("brand-samples")
+        .getPublicUrl(fileName);
+      const publicUrl = urlData.publicUrl;
+
+      // 4. Call Edge Function with the public URL
+      const { data, error } = await supabase.functions.invoke("generate-brand-style", {
+        body: {
+          companyName: form.name,
+          industry: form.industry,
+          logoUrl: company?.logo_url || null,
+          brandColors: [brandPrimary, brandSecondary, brandAccent],
+          sampleImageUrl: publicUrl,
+        },
+      });
+
+      if (error) throw error;
+      if (!data?.recipe) throw new Error("No style recipe returned from AI");
+
+      const recipe = data.recipe;
+      setBrandPrimary(recipe.primaryColor);
+      setBrandSecondary(recipe.secondaryColor);
+      setBrandAccent(recipe.accentColor);
+      setBrandRecipe(recipe);
+
+      toast.success("AI successfully generated your corporate style recipe!");
+    } catch (err: any) {
+      console.error("AI analysis failed:", err);
+      toast.error(err.message || "Failed to analyze style sample.");
+    } finally {
+      setAnalyzingStyle(false);
+    }
+  };
 
   const handleUpdate = (k: string, v: string) => {
     setForm((prev) => ({ ...prev, [k]: v }));
@@ -428,6 +663,163 @@ export const CoSettings = ({ companyId, userId, role, onCompanyUpdate }: CoSetti
                   </label>
                 </Button>
               </div>
+            </div>
+          </div>
+
+          {/* Corporate Brand Kit Panel */}
+          <div className="bg-[#0d1117] border border-white/5 rounded-2xl p-6 shadow-xl space-y-4 text-left">
+            <h3 className="text-base font-semibold text-white flex items-center gap-2">
+              <Palette className="w-5 h-5 text-primary" /> Corporate Brand Kit
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Define your brand's style guide and color palette.
+            </p>
+
+            <div className="space-y-3.5">
+              {/* Primary Color */}
+              <div className="space-y-1.5">
+                <Label className="text-xs text-zinc-300 font-medium">Primary Brand Color</Label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Input
+                      type="text"
+                      value={brandPrimary}
+                      onChange={(e) => setBrandPrimary(e.target.value)}
+                      placeholder="#22C55E"
+                      maxLength={7}
+                      className="h-10 rounded-xl bg-[#111318] border-white/10 text-white pl-10 text-xs font-mono"
+                    />
+                    <div 
+                      className="w-5 h-5 rounded absolute left-3 top-1/2 -translate-y-1/2 border border-white/10"
+                      style={{ backgroundColor: brandPrimary }}
+                    />
+                  </div>
+                  <input
+                    type="color"
+                    value={brandPrimary.startsWith('#') && brandPrimary.length === 7 ? brandPrimary : '#22c55e'}
+                    onChange={(e) => setBrandPrimary(e.target.value.toUpperCase())}
+                    className="w-10 h-10 p-0 rounded-xl border border-white/10 bg-transparent cursor-pointer overflow-hidden"
+                  />
+                </div>
+              </div>
+
+              {/* Secondary Color */}
+              <div className="space-y-1.5">
+                <Label className="text-xs text-zinc-300 font-medium">Secondary Color (Background/Canvas)</Label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Input
+                      type="text"
+                      value={brandSecondary}
+                      onChange={(e) => setBrandSecondary(e.target.value)}
+                      placeholder="#0D1117"
+                      maxLength={7}
+                      className="h-10 rounded-xl bg-[#111318] border-white/10 text-white pl-10 text-xs font-mono"
+                    />
+                    <div 
+                      className="w-5 h-5 rounded absolute left-3 top-1/2 -translate-y-1/2 border border-white/10"
+                      style={{ backgroundColor: brandSecondary }}
+                    />
+                  </div>
+                  <input
+                    type="color"
+                    value={brandSecondary.startsWith('#') && brandSecondary.length === 7 ? brandSecondary : '#0d1117'}
+                    onChange={(e) => setBrandSecondary(e.target.value.toUpperCase())}
+                    className="w-10 h-10 p-0 rounded-xl border border-white/10 bg-transparent cursor-pointer overflow-hidden"
+                  />
+                </div>
+              </div>
+
+              {/* Accent Color */}
+              <div className="space-y-1.5">
+                <Label className="text-xs text-zinc-300 font-medium">Accent / Callout Color</Label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Input
+                      type="text"
+                      value={brandAccent}
+                      onChange={(e) => setBrandAccent(e.target.value)}
+                      placeholder="#3B82F6"
+                      maxLength={7}
+                      className="h-10 rounded-xl bg-[#111318] border-white/10 text-white pl-10 text-xs font-mono"
+                    />
+                    <div 
+                      className="w-5 h-5 rounded absolute left-3 top-1/2 -translate-y-1/2 border border-white/10"
+                      style={{ backgroundColor: brandAccent }}
+                    />
+                  </div>
+                  <input
+                    type="color"
+                    value={brandAccent.startsWith('#') && brandAccent.length === 7 ? brandAccent : '#3b82f6'}
+                    onChange={(e) => setBrandAccent(e.target.value.toUpperCase())}
+                    className="w-10 h-10 p-0 rounded-xl border border-white/10 bg-transparent cursor-pointer overflow-hidden"
+                  />
+                </div>
+              </div>
+
+              {/* Dominant Color Extractor */}
+              {company?.logo_url && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={extractColorsFromLogo}
+                  className="w-full h-10 rounded-xl border-white/10 hover:bg-white/5 text-white flex items-center justify-center gap-2 text-xs font-semibold"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" /> Extract Colors from Logo
+                </Button>
+              )}
+
+              {/* AI Style Analyzer */}
+              <div className="border-t border-white/5 pt-3.5 space-y-2">
+                <Label className="text-xs text-zinc-300 font-medium">AI Style Analyzer</Label>
+                <p className="text-[10px] text-muted-foreground leading-relaxed">
+                  Upload an existing social media design sample to let Gemini analyze your layout rules, fonts, and style structure automatically.
+                </p>
+                <input
+                  type="file"
+                  ref={styleInputRef}
+                  accept="image/*"
+                  onChange={analyzeStyleSample}
+                  className="hidden"
+                  disabled={analyzingStyle}
+                />
+                <Button
+                  type="button"
+                  onClick={() => styleInputRef.current?.click()}
+                  disabled={analyzingStyle}
+                  className="w-full h-10 rounded-xl bg-card border border-white/10 hover:bg-white/5 text-white flex items-center justify-center gap-2 text-xs font-semibold cursor-pointer"
+                >
+                  {analyzingStyle ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" /> Analyzing graphic...
+                    </>
+                  ) : (
+                    <>
+                      <Palette className="w-3.5 h-3.5 text-primary" /> Analyze Style Sample Post
+                    </>
+                  )}
+                </Button>
+              </div>
+
+              {/* Recipe Recipe Metadata Preview */}
+              {brandRecipe && brandRecipe.visualStyle && (
+                <div className="bg-white/[0.02] border border-white/5 rounded-xl p-3 space-y-1">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">AI Style Rules</p>
+                  <p className="text-[11px] text-white/90 leading-relaxed font-medium">{brandRecipe.visualStyle}</p>
+                  <p className="text-[9px] text-muted-foreground mt-1">Fonts: {brandRecipe.fontTitle} + {brandRecipe.fontBody} | Theme: {brandRecipe.layoutTheme}</p>
+                </div>
+              )}
+
+              {/* Save Button */}
+              <Button
+                type="button"
+                onClick={handleSaveBrandKit}
+                disabled={savingBrand}
+                className="w-full h-10 rounded-xl bg-primary hover:bg-primary/95 text-primary-foreground font-semibold flex items-center justify-center gap-2 text-xs"
+              >
+                {savingBrand ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                Save Brand Kit
+              </Button>
             </div>
           </div>
 

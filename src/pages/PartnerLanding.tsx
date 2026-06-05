@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Link } from "react-router-dom";
-import { Sparkles, FileText, CalendarClock, CreditCard } from "lucide-react";
+import { PenLine, FileText, CalendarClock, CreditCard } from "lucide-react";
 
 const PartnerLanding = () => {
   return (
@@ -9,7 +9,7 @@ const PartnerLanding = () => {
       <header className="border-b border-border bg-card/50 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Sparkles className="w-6 h-6 text-orange-500" />
+            <PenLine className="w-6 h-6 text-orange-500" />
             <span className="font-bold text-lg tracking-tight">Talenthub <span className="text-orange-500">Partners</span></span>
           </div>
           <nav className="flex items-center gap-4">
@@ -25,7 +25,7 @@ const PartnerLanding = () => {
           <div className="absolute inset-0 bg-orange-500/5 [mask-image:radial-gradient(ellipse_at_center,black,transparent)]" />
           <div className="max-w-4xl mx-auto text-center relative z-10">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-orange-500/10 text-orange-500 text-sm font-medium mb-6">
-              <Sparkles className="w-4 h-4" /> Earn money writing CVs
+              <PenLine className="w-4 h-4" /> Earn money writing CVs
             </div>
             <h1 className="text-5xl md:text-6xl font-bold tracking-tight mb-6">
               Monetize your HR & recruiting expertise

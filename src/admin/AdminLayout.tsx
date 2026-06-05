@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Briefcase, Users, BarChart3, Bell, ArrowLeft, LogOut, Shield,
-  Sparkles, Flag, Zap, AlertTriangle, Building2, ChevronLeft, ChevronRight,
+  Gem, Flag, Zap, AlertTriangle, Building2, ChevronLeft, ChevronRight,
   Search, Mail, Menu,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
@@ -15,7 +15,7 @@ const items = [
   { to: "/admin/quick-jobs", label: "Quick Jobs", icon: Zap },
   { to: "/admin/users", label: "Users", icon: Users },
   { to: "/admin/notifications", label: "Notifications", icon: Bell },
-  { to: "/admin/revamp", label: "CV Revamp", icon: Sparkles },
+  { to: "/admin/revamp", label: "CV Revamp", icon: Gem },
   { to: "/admin/late-deliveries", label: "Late Deliveries", icon: AlertTriangle },
   { to: "/admin/flags", label: "Feature Flags", icon: Flag },
 ];

@@ -1,15 +1,100 @@
-import { useEffect, useState, Fragment } from "react";
+import { useEffect, useState, Fragment, useRef } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { stepVariants, skillTagVariants } from "@/lib/animations";
+import { AnimatedProgress } from "@/components/AnimatedProgress";
 import { useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Loader2, Sparkles, Check, X, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, UserCheck, Check, X, Plus, ArrowRight, Palette, LayoutGrid } from "lucide-react";
 import mascot from "@/assets/mascot-transparent.png";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
+import { useApp } from "@/context/AppContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+// ─── Theme & Nav data (shared with Settings.tsx) ──────────────────────────────
+const ONBOARDING_THEMES = [
+  { id: "forest",    name: "Forest",    hex: "#4f6448" },
+  { id: "midnight",  name: "Midnight",  hex: "#1e60a3" },
+  { id: "sunset",    name: "Sunset",    hex: "#db4e1d" },
+  { id: "vaporwave", name: "Vaporwave", hex: "#a61fed" },
+  { id: "emerald",   name: "Emerald",   hex: "#0b7a58" },
+  { id: "rose",      name: "Rose",      hex: "#e11d48" },
+  { id: "amber",     name: "Amber",     hex: "#d97706" },
+  { id: "indigo",    name: "Indigo",    hex: "#4338ca" },
+  { id: "teal",      name: "Teal",      hex: "#0891b2" },
+  { id: "coral",     name: "Coral",     hex: "#f43f5e" },
+  { id: "slate",     name: "Slate",     hex: "#475569" },
+  { id: "gold",      name: "Gold",      hex: "#b45309" },
+];
+
+const ONBOARDING_NAV_STYLES = [
+  { id: "classic", name: "Classic",  desc: "Labels & icons" },
+  { id: "glass",   name: "Glass",    desc: "Frosted bar" },
+  { id: "minimal", name: "Minimal",  desc: "Clean underline" },
+  { id: "bubble",  name: "Bubble",   desc: "Pill highlight" },
+];
+
+// Mini SVG previews for nav styles
+const NavPreview = ({ style, accent }: { style: string; accent: string }) => {
+  const icons = ["●", "●", "●", "●"];
+  if (style === "classic") {
+    return (
+      <div className="w-full bg-white rounded-lg overflow-hidden border border-zinc-200" style={{ height: 32 }}>
+        <div className="flex items-end justify-around h-full px-1 pb-1">
+          {icons.map((_, i) => (
+            <div key={i} className="flex flex-col items-center gap-0.5">
+              <div className="w-3 h-3 rounded-sm" style={{ background: i === 1 ? accent : "#d1d5db" }} />
+              <div className="w-4 h-0.5 rounded-full" style={{ background: i === 1 ? accent : "#e5e7eb" }} />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (style === "glass") {
+    return (
+      <div className="w-full rounded-lg overflow-hidden border border-zinc-200" style={{ height: 32, background: "rgba(255,255,255,0.6)", backdropFilter: "blur(6px)" }}>
+        <div className="flex items-center justify-around h-full px-1">
+          {icons.map((_, i) => (
+            <div key={i} className="w-4 h-4 rounded-md flex items-center justify-center" style={{ background: i === 1 ? accent + "33" : "transparent" }}>
+              <div className="w-2 h-2 rounded-full" style={{ background: i === 1 ? accent : "#9ca3af" }} />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (style === "minimal") {
+    return (
+      <div className="w-full bg-white rounded-lg overflow-hidden border border-zinc-200" style={{ height: 32 }}>
+        <div className="flex items-center justify-around h-full px-1">
+          {icons.map((_, i) => (
+            <div key={i} className="flex flex-col items-center gap-0.5">
+              <div className="w-2.5 h-2.5 rounded-sm" style={{ background: i === 1 ? accent : "#d1d5db" }} />
+              <div className="w-4 h-px" style={{ background: i === 1 ? accent : "transparent" }} />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  // bubble
+  return (
+    <div className="w-full bg-white rounded-lg overflow-hidden border border-zinc-200" style={{ height: 32 }}>
+      <div className="flex items-center justify-around h-full px-1">
+        {icons.map((_, i) => (
+          <div key={i} className="flex items-center justify-center rounded-full px-2 py-1" style={{ background: i === 1 ? accent + "22" : "transparent", minWidth: 24 }}>
+            <div className="w-2.5 h-2.5 rounded-full" style={{ background: i === 1 ? accent : "#d1d5db" }} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 export const INDUSTRIES = [
   "Administration", "Finance & Accounting", "Procurement & Supply Chain",
@@ -194,6 +279,7 @@ const getMascotTip = (stepIndex: number): string => {
 const ProfileSetup = () => {
   const navigate = useNavigate();
   const { user, loading } = useAuth();
+  const { colorTheme, setColorTheme, navStyle, setNavStyle } = useApp();
   const [currentStep, setCurrentStep] = useState(1);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({
@@ -205,6 +291,11 @@ const ProfileSetup = () => {
   const [industries, setIndustries] = useState<string[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [customSkillInput, setCustomSkillInput] = useState("");
+  // Step 0: show personalisation for first-time users only
+  // A returning user already has colorTheme saved — skip straight to Step 1
+  const [showPersonalise, setShowPersonalise] = useState<boolean>(
+    () => !localStorage.getItem("colorTheme")
+  );
 
   useEffect(() => {
     if (loading) return;
@@ -420,6 +511,8 @@ const ProfileSetup = () => {
 
   const currentQuestion = questions[currentStep - 1];
 
+  const directionRef = useRef(1);
+
   const handleNext = () => {
     if (currentQuestion.validation) {
       let errorStr: string | null = null;
@@ -440,14 +533,21 @@ const ProfileSetup = () => {
     if (currentStep === questions.length) {
       handleSubmit();
     } else {
+      directionRef.current = 1;
       setCurrentStep((s) => s + 1);
     }
   };
 
   const handleBack = () => {
     if (currentStep === 1) {
-      navigate(-1);
+      // New users: go back to personalisation step; returning users navigate away
+      if (!localStorage.getItem("_onboarding_personalised")) {
+        setShowPersonalise(true);
+      } else {
+        navigate(-1);
+      }
     } else {
+      directionRef.current = -1;
       setCurrentStep((s) => s - 1);
     }
   };
@@ -630,21 +730,28 @@ const ProfileSetup = () => {
                 </span>
                 {selectedSkills.length > 0 ? (
                   <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1 p-2 rounded-xl border border-zinc-200 bg-zinc-50/50">
-                    {selectedSkills.map((skill) => (
-                      <span
-                        key={skill}
-                        className="text-[11px] px-2.5 py-1 rounded-full bg-zinc-800 text-white flex items-center gap-1.5 font-semibold shadow-sm animate-fade-in"
-                      >
-                        {skill}
-                        <button
-                          type="button"
-                          onClick={() => removeSkill(skill)}
-                          className="text-zinc-300 hover:text-white focus:outline-none transition-colors"
+                    <AnimatePresence mode="popLayout">
+                      {selectedSkills.map((skill) => (
+                        <motion.span
+                          key={skill}
+                          variants={skillTagVariants}
+                          initial="hidden"
+                          animate="visible"
+                          exit="exit"
+                          layout
+                          className="text-[11px] px-2.5 py-1 rounded-full bg-zinc-800 text-white flex items-center gap-1.5 font-semibold shadow-sm"
                         >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </span>
-                    ))}
+                          {skill}
+                          <button
+                            type="button"
+                            onClick={() => removeSkill(skill)}
+                            className="text-zinc-300 hover:text-white focus:outline-none transition-colors"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </motion.span>
+                      ))}
+                    </AnimatePresence>
                   </div>
                 ) : (
                   <div className="text-center py-4 px-3 rounded-xl border border-dashed border-zinc-200 text-xs text-zinc-400 bg-zinc-50/30">
@@ -736,6 +843,126 @@ const ProfileSetup = () => {
     }
   };
 
+  // ─── Personalisation Step 0 ──────────────────────────────────────────────
+  const accentHex = ONBOARDING_THEMES.find(t => t.id === colorTheme)?.hex ?? "#4f6448";
+
+  if (showPersonalise) {
+    return (
+      <div className="flex-1 flex flex-col bg-[#0a0c10] text-[#e5e7eb] overflow-hidden">
+        {/* Scrollable content */}
+        <div className="flex-1 overflow-y-auto px-5 py-6 flex flex-col max-w-md mx-auto w-full">
+
+          {/* Mascot + bubble */}
+          <div className="flex flex-col items-center mt-2 mb-5 shrink-0">
+            <div className="relative w-20 h-20 select-none mb-3">
+              <img src={mascot} alt="AI Assistant" className="w-full h-full object-contain animate-bob drop-shadow-[0_0_12px_rgba(130,200,80,0.4)]" />
+              <span className="absolute bottom-0 right-0 w-4 h-4 rounded-full bg-success border-2 border-[#0a0c10] shadow-[0_0_8px_#22c55e] animate-pulse" />
+            </div>
+            <div className="bg-white text-zinc-900 rounded-2xl px-4 py-3 shadow-2xl relative border border-zinc-100 text-center max-w-xs">
+              <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-b-[6px] border-b-white" />
+              <p className="text-xs font-semibold leading-relaxed text-zinc-800">
+                Welcome! Let's make the app feel like <em>yours</em>. Pick an accent colour and navigation style before we get started! 🎨
+              </p>
+            </div>
+          </div>
+
+          {/* ── Colour Picker ── */}
+          <div className="bg-white/5 rounded-2xl p-4 mb-4 border border-white/8">
+            <div className="flex items-center gap-2 mb-3">
+              <Palette className="w-4 h-4" style={{ color: accentHex }} />
+              <p className="text-sm font-bold text-white">Accent Colour</p>
+            </div>
+            <div className="grid grid-cols-6 gap-2">
+              {ONBOARDING_THEMES.map((t) => {
+                const selected = colorTheme === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setColorTheme(t.id)}
+                    className="flex flex-col items-center gap-1 group"
+                    title={t.name}
+                  >
+                    <div
+                      className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-200 ${
+                        selected ? "scale-110 shadow-lg" : "opacity-70 hover:opacity-100 hover:scale-105"
+                      }`}
+                      style={{
+                        background: t.hex,
+                        boxShadow: selected ? `0 0 0 3px #0a0c10, 0 0 0 5px ${t.hex}` : undefined,
+                      }}
+                    >
+                      {selected && <div className="w-3 h-3 rounded-full bg-white shadow" />}
+                    </div>
+                    <span className={`text-[9px] font-semibold leading-none text-center ${
+                      selected ? "text-white" : "text-zinc-500 group-hover:text-zinc-300"
+                    }`}>{t.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ── Nav Style Picker ── */}
+          <div className="bg-white/5 rounded-2xl p-4 mb-6 border border-white/8">
+            <div className="flex items-center gap-2 mb-3">
+              <LayoutGrid className="w-4 h-4" style={{ color: accentHex }} />
+              <p className="text-sm font-bold text-white">Navigation Style</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              {ONBOARDING_NAV_STYLES.map((ns) => {
+                const selected = navStyle === ns.id;
+                return (
+                  <button
+                    key={ns.id}
+                    type="button"
+                    onClick={() => setNavStyle(ns.id)}
+                    className={`rounded-xl p-3 border-2 transition-all duration-200 text-left ${
+                      selected
+                        ? "border-white/40 bg-white/10 scale-[1.02]"
+                        : "border-white/8 bg-white/3 hover:bg-white/8"
+                    }`}
+                    style={selected ? { borderColor: accentHex + "99" } : {}}
+                  >
+                    {/* Mini preview */}
+                    <div className="mb-2">
+                      <NavPreview style={ns.id} accent={accentHex} />
+                    </div>
+                    <p className={`text-xs font-bold ${ selected ? "text-white" : "text-zinc-400" }`}>{ns.name}</p>
+                    <p className="text-[10px] text-zinc-500 mt-0.5">{ns.desc}</p>
+                    {selected && (
+                      <div className="mt-1.5 flex items-center gap-1">
+                        <div className="w-1.5 h-1.5 rounded-full" style={{ background: accentHex }} />
+                        <span className="text-[10px] font-semibold" style={{ color: accentHex }}>Selected</span>
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ── Let's Go Button ── */}
+          <button
+            type="button"
+            onClick={() => {
+              // Mark that personalisation was completed so back button from Step 1 navigates away
+              localStorage.setItem("_onboarding_personalised", "1");
+              setShowPersonalise(false);
+            }}
+            className="w-full h-14 rounded-2xl font-bold text-white flex items-center justify-center gap-2 text-base shadow-2xl transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]"
+            style={{ background: `linear-gradient(135deg, ${accentHex}, ${accentHex}cc)`, boxShadow: `0 8px 32px ${accentHex}55` }}
+          >
+            Let's Go
+            <ArrowRight className="w-5 h-5" />
+          </button>
+
+          <p className="text-center text-[10px] text-zinc-600 mt-3">You can change these anytime in Settings</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 flex flex-col bg-[#0a0c10] text-[#e5e7eb] overflow-hidden">
       {/* Top Header & Progress */}
@@ -751,7 +978,7 @@ const ProfileSetup = () => {
             SETUP: STEP {currentStep}
           </div>
           <div className="w-9 h-9 rounded-full bg-white/5 border border-white/5 flex items-center justify-center text-primary animate-pulse">
-            <Sparkles className="w-4 h-4" />
+            <UserCheck className="w-4 h-4" />
           </div>
         </div>
 
@@ -761,12 +988,11 @@ const ProfileSetup = () => {
             <span>STEP {currentStep} OF {questions.length}</span>
             <span>{Math.round(progressPercent)}%</span>
           </div>
-          <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-primary transition-all duration-300 ease-out rounded-full"
-              style={{ width: `${progressPercent}%` }}
-            />
-          </div>
+          <AnimatedProgress
+            value={progressPercent}
+            className="h-1.5 bg-white/5"
+            barClassName="bg-primary"
+          />
         </div>
       </div>
 
@@ -797,22 +1023,33 @@ const ProfileSetup = () => {
       {/* Main Slide Card */}
       <div className="flex-1 overflow-y-auto px-6 py-6 flex flex-col justify-start max-w-md mx-auto w-full">
         <div className="bg-white text-zinc-950 rounded-3xl p-6 shadow-2xl space-y-5 border border-zinc-100 flex flex-col justify-between">
-          <div className="space-y-4">
-            {/* Center aligned Question */}
-            <h2 className="text-lg font-bold text-center text-zinc-800 leading-snug">
-              {getStepQuestionText(currentQuestion)}
-            </h2>
+          <AnimatePresence mode="wait" custom={directionRef.current}>
+            <motion.div
+              key={currentStep}
+              custom={directionRef.current}
+              variants={stepVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+            >
+              <div className="space-y-4">
+                {/* Center aligned Question */}
+                <h2 className="text-lg font-bold text-center text-zinc-800 leading-snug">
+                  {getStepQuestionText(currentQuestion)}
+                </h2>
 
-            {/* Input Label & Field */}
-            <div className="space-y-1.5 pt-2">
-              <label className="text-[10px] font-bold tracking-wider text-zinc-400 uppercase block pl-1">
-                {getStepLabelText(currentQuestion)}
-              </label>
-              <div className="pt-0.5">
-                {renderInput()}
+                {/* Input Label & Field */}
+                <div className="space-y-1.5 pt-2">
+                  <label className="text-[10px] font-bold tracking-wider text-zinc-400 uppercase block pl-1">
+                    {getStepLabelText(currentQuestion)}
+                  </label>
+                  <div className="pt-0.5">
+                    {renderInput()}
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            </motion.div>
+          </AnimatePresence>
 
           {/* Action Button & Tip */}
           <div className="space-y-3 pt-4">

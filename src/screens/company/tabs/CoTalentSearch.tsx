@@ -368,11 +368,7 @@ export const CoTalentSearch = ({ userId }: CoTalentSearchProps) => {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {filteredCandidates.map((c) => {
-                // Mask Name
-                const parts = (c.full_name || "Unknown Candidate").split(" ");
-                const firstName = parts[0];
-                const lastInitial = parts.length > 1 ? `${parts[parts.length - 1][0]}.` : "";
-                const maskedName = `${firstName} ${lastInitial}`;
+                const displayName = c.full_name || "Unknown Candidate";
 
                 const isHighlighted = !!highlightedMap[c.id];
                 const requestStatus = requestedMap[c.id];
@@ -384,7 +380,7 @@ export const CoTalentSearch = ({ userId }: CoTalentSearchProps) => {
                   >
                     <div className="flex justify-between items-start">
                       <div>
-                        <h3 className="text-base font-bold text-white">{maskedName}</h3>
+                        <h3 className="text-base font-bold text-white">{displayName}</h3>
                         <p className="text-xs text-primary font-medium">{c.current_job_title || "Professional"}</p>
                       </div>
                       <div className="bg-white/5 border border-white/10 rounded px-2.5 py-1 text-xs text-muted-foreground font-semibold shrink-0">
@@ -480,10 +476,7 @@ export const CoTalentSearch = ({ userId }: CoTalentSearchProps) => {
                 const c = h.profiles;
                 if (!c) return null;
 
-                const parts = (c.full_name || "Unknown Candidate").split(" ");
-                const firstName = parts[0];
-                const lastInitial = parts.length > 1 ? `${parts[parts.length - 1][0]}.` : "";
-                const displayName = `${firstName} ${lastInitial}`;
+                const displayName = c.full_name || "Unknown Candidate";
 
                 const requestStatus = requestedMap[c.id];
 
@@ -582,10 +575,7 @@ export const CoTalentSearch = ({ userId }: CoTalentSearchProps) => {
                       const c = r.profiles;
                       if (!c) return null;
 
-                      const parts = (c.full_name || "Unknown Candidate").split(" ");
-                      const firstName = parts[0];
-                      const lastInitial = parts.length > 1 ? `${parts[parts.length - 1][0]}.` : "";
-                      const displayName = `${firstName} ${lastInitial}`;
+                      const displayName = c.full_name || "Unknown Candidate";
 
                       return (
                         <tr key={r.id} className="hover:bg-white/[0.01] transition-colors">

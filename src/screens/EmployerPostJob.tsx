@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { FIELDS_OF_STUDY, fieldsForIndustries } from "@/screens/ProfileSetup";
 import { toast } from "sonner";
+import CoAssessmentBuilder from "./company/components/CoAssessmentBuilder";
 
 const EMPLOYMENT_TYPES = ["Full-time", "Part-time", "Contract", "Internship", "Temporary"];
 const QUALIFICATIONS = ["Secondary School", "Certificate", "Diploma", "Bachelor's Degree", "Honours", "Master's Degree", "PhD"];
@@ -58,6 +59,12 @@ const EmployerPostJob = () => {
     application_deadline: "",
   });
 
+  const [assessmentData, setAssessmentData] = useState<{
+    preScreening: any[];
+    formalAssessment: any | null;
+    assessmentQuestions: any[];
+  }>({ preScreening: [], formalAssessment: null, assessmentQuestions: [] });
+
   useEffect(() => {
     if (loading) return;
     if (!user) { navigate("/employer/landing", { replace: true }); return; }
@@ -87,7 +94,7 @@ const EmployerPostJob = () => {
     }
     setBusy(true);
     const skills = form.skills.split(",").map((s) => s.trim()).filter(Boolean);
-    const { error } = await supabase.from("jobs").insert([{
+    const { data: newJob, error } = await supabase.from("jobs").insert([{
       ...parsed.data,
       salary_range: parsed.data.salary_range || null,
       hiring_contact_name: parsed.data.hiring_contact_name || null,
@@ -100,11 +107,72 @@ const EmployerPostJob = () => {
       posted_by: user!.id,
       company_id: companyId || null,
       status: "open",
-    }] as any);
+    }] as any).select().single();
+    
+    if (error) {
+      setBusy(false);
+      toast.error(error.message);
+      return;
+    }
+
+    const targetJobId = newJob.id;
+
+    // 1. Save Pre-screening Questions
+    if (assessmentData.preScreening.length > 0) {
+      const psInsert = assessmentData.preScreening.map((q) => ({
+        job_id: targetJobId,
+        question_text: q.question_text,
+        question_type: q.question_type,
+        options: q.options,
+        is_required: q.is_required,
+        is_disqualifying: q.is_disqualifying,
+        correct_answer: q.correct_answer,
+      }));
+      const { error: psErr } = await supabase.from("pre_screening_questions").insert(psInsert);
+      if (psErr) {
+        console.error("Failed to save pre-screening questions:", psErr);
+      }
+    }
+
+    // 2. Save Formal Assessment Config
+    if (assessmentData.formalAssessment) {
+      const { data: assess, error: assessErr } = await supabase
+        .from("assessments")
+        .insert([{
+          job_id: targetJobId,
+          name: assessmentData.formalAssessment.name,
+          attempts_allowed: assessmentData.formalAssessment.attempts_allowed,
+          is_live_timed: assessmentData.formalAssessment.is_live_timed,
+          deadline_days: assessmentData.formalAssessment.deadline_days,
+          auto_send: assessmentData.formalAssessment.auto_send,
+        }])
+        .select()
+        .single();
+
+      if (assessErr) {
+        console.error("Failed to save assessment config:", assessErr);
+      } else if (assessmentData.assessmentQuestions.length > 0) {
+        const qInsert = assessmentData.assessmentQuestions.map((q, idx) => ({
+          assessment_id: assess.id,
+          question_text: q.question_text || (q.question_type === "iq_aptitude" ? "Cognitive Aptitude Test" : ""),
+          question_type: q.question_type,
+          order_index: idx,
+          options: q.options,
+          correct_answers: q.correct_answers,
+          video_max_duration: q.video_max_duration,
+          iq_difficulty: q.iq_difficulty,
+          iq_count: q.iq_count,
+          iq_source: q.iq_source,
+          time_limit_seconds: q.time_limit_seconds,
+        }));
+        const { error: qErr } = await supabase.from("assessment_questions").insert(qInsert);
+        if (qErr) {
+          console.error("Failed to save assessment questions:", qErr);
+        }
+      }
+    }
+
     setBusy(false);
-    
-    if (error) { toast.error(error.message); return; }
-    
     toast.success("Job successfully posted!");
     navigate("/employer");
   };
@@ -217,6 +285,15 @@ const EmployerPostJob = () => {
                 <Field label="Hiring Manager Title (optional)" v={form.hiring_contact_title} on={(v) => update("hiring_contact_title", v)} placeholder="HR Manager" />
               </div>
             </div>
+
+            {/* Assessment and pre-screening builder section */}
+            <CoAssessmentBuilder
+              jobId={null}
+              jobTitle={form.title}
+              jobDescription={form.description}
+              jobSkills={form.skills}
+              onSave={setAssessmentData}
+            />
 
             <div className="pt-6">
               <Button type="submit" disabled={busy} className="w-full h-12 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl text-lg font-semibold shadow-glow">

@@ -67,12 +67,38 @@ const AdminQuickJobs = () => {
               <span className={`text-[10px] uppercase px-2 py-0.5 rounded-full font-bold ${
                 p.status === "approved" ? "bg-success/15 text-success" :
                 p.status === "rejected" ? "bg-destructive/15 text-destructive" :
+                p.status === "closed" ? "bg-zinc-500/15 text-zinc-400" :
                 "bg-warning/15 text-warning"
               }`}>{p.status}</span>
             </div>
-            <p className="text-xs text-muted-foreground">{p.description}</p>
-            <p className="text-[11px]">BWP {p.pay_amount} · {p.pay_type} · {p.duration}</p>
-            <p className="text-[11px] text-muted-foreground">By {p.poster_name ?? "user"} · {p.contact_number}</p>
+            <div className="pt-2 pb-2">
+              <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-wider block mb-1">Job Description</span>
+              <p className="text-xs text-zinc-300 leading-relaxed bg-black/10 p-3 rounded-xl border border-white/5 whitespace-pre-wrap">{p.description}</p>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-2 text-xs pt-2 border-t border-white/5 mt-2 bg-white/[0.01] p-3 rounded-xl border border-white/5">
+              <div><span className="font-semibold text-muted-foreground">Compensation:</span> BWP {p.pay_amount} ({p.pay_type})</div>
+              <div><span className="font-semibold text-muted-foreground">Duration:</span> {p.duration}</div>
+              <div><span className="font-semibold text-muted-foreground">Date Needed:</span> {p.date_needed}</div>
+              <div><span className="font-semibold text-muted-foreground">Preferred Gender:</span> {p.preferred_gender || "Any"}</div>
+              <div><span className="font-semibold text-muted-foreground">Category:</span> {p.category}</div>
+              <div><span className="font-semibold text-muted-foreground">Location:</span> {p.location}</div>
+              <div className="col-span-2"><span className="font-semibold text-muted-foreground">Poster Name:</span> {p.poster_name ?? "user"}</div>
+              <div className="col-span-2"><span className="font-semibold text-muted-foreground">Contact Phone:</span> {p.contact_number}</div>
+            </div>
+            {p.status === "closed" && (
+              <div className="mt-2 text-xs bg-zinc-500/5 border border-zinc-500/10 p-3 rounded-xl space-y-1 mt-2">
+                <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider block mb-1">Gig Closure Information</span>
+                <div><span className="font-semibold text-zinc-500">Closure Reason:</span> {
+                  p.close_reason === 'hired_on_platform' ? 'Hired on Talenthub' :
+                  p.close_reason === 'hired_off_platform' ? 'Hired outside Talenthub' :
+                  p.close_reason === 'cancelled' ? 'Cancelled / No longer needed' : 'Other'
+                }</div>
+                {p.hired_user_name && <div><span className="font-semibold text-zinc-500">Hired Candidate:</span> {p.hired_user_name}</div>}
+                {p.close_text && <div><span className="font-semibold text-zinc-500">Explanation:</span> "{p.close_text}"</div>}
+                {p.closed_at && <div className="text-[10px] text-zinc-600 mt-1">Closed on {new Date(p.closed_at).toLocaleString("en-GB")}</div>}
+              </div>
+            )}
             {p.status === "pending" && (
               <div className="flex gap-2 pt-2">
                 <Button size="sm" onClick={() => setStatus(p.id, "approved")} className="flex-1 h-9 bg-success hover:bg-success/90 rounded-xl text-xs">

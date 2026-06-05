@@ -1,11 +1,13 @@
+import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AuthProvider } from "@/context/AuthContext";
+import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { AppProvider } from "@/context/AppContext";
 import { PhoneFrame } from "@/components/PhoneFrame";
+import OneSignal from "react-onesignal";
 import { TabLayout } from "@/components/TabLayout";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { Outlet } from "react-router-dom";
@@ -51,8 +53,41 @@ import EmployerPostJob from "./screens/EmployerPostJob";
 import UploadDocuments from "./screens/UploadDocuments";
 import AdminLateDeliveries from "./admin/AdminLateDeliveries";
 import AdminCompanies from "./admin/AdminCompanies";
+import PublicJobApplication from "./pages/PublicJobApplication.tsx";
+import CandidateAssessment from "./screens/CandidateAssessment";
+import ExternalAssessment from "./pages/ExternalAssessment.tsx";
+
+
+
 
 const queryClient = new QueryClient();
+
+const OneSignalInitializer = () => {
+  const { user } = useAuth();
+
+  useEffect(() => {
+    OneSignal.init({
+      appId: "65e7fb40-66af-4043-956a-e06c0d4c7a3c",
+      allowLocalhostAsSecureOrigin: true,
+    }).catch((err) => {
+      console.warn("OneSignal initialization failed:", err);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (user?.id) {
+      OneSignal.login(user.id).catch((err) => {
+        console.warn("OneSignal login failed:", err);
+      });
+    } else {
+      OneSignal.logout().catch((err) => {
+        console.warn("OneSignal logout failed:", err);
+      });
+    }
+  }, [user]);
+
+  return null;
+};
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -61,6 +96,7 @@ const App = () => (
       <Sonner />
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
+          <OneSignalInitializer />
           <AppProvider>
             <Routes>
               {/* Full-width admin web app — no PhoneFrame */}
@@ -92,6 +128,14 @@ const App = () => (
               {/* B2B Auth (Full screen, no PhoneFrame) */}
               <Route path="/b2b-auth" element={<Auth />} />
 
+              {/* Public external job application page */}
+              <Route path="/jobs/:jobId/apply" element={<PublicJobApplication />} />
+
+              {/* Public external candidate assessment page */}
+              <Route path="/assessment/:token" element={<ExternalAssessment />} />
+
+
+
               {/* Mobile candidate app - Wrapped in PhoneFrame */}
               <Route element={<PhoneFrame><Outlet /></PhoneFrame>}>
                 <Route path="/" element={<Index />} />
@@ -112,6 +156,7 @@ const App = () => (
                 <Route path="/subscribe" element={<Subscribe />} />
                 <Route path="/quick-jobs/new" element={<ProtectedRoute><QuickJobNew /></ProtectedRoute>} />
                 <Route path="/upload-documents" element={<ProtectedRoute><UploadDocuments /></ProtectedRoute>} />
+                <Route path="/candidate-assessment/:jobId" element={<ProtectedRoute><CandidateAssessment /></ProtectedRoute>} />
                 
                 <Route element={<ProtectedRoute><TabLayout /></ProtectedRoute>}>
                   <Route path="/swipe" element={<Swipe />} />

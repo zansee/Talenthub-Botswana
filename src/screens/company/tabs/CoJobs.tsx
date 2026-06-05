@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { modalOverlayVariants, modalContentVariants } from "@/lib/animations";
 import { supabase } from "@/integrations/supabase/client";
-import { Briefcase, Users, Eye, Plus, Pencil, Trash2, X, AlertTriangle, ToggleLeft, ToggleRight, Calendar } from "lucide-react";
+import { Briefcase, Users, Eye, Plus, Pencil, Trash2, X, AlertTriangle, ToggleLeft, ToggleRight, Calendar, Link2, Image as ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
+import CoAssessmentBuilder from "../components/CoAssessmentBuilder";
+import { CoShareGraphicBuilder } from "../components/CoShareGraphicBuilder";
 
 interface CoJobsProps {
   companyId: string | null;
@@ -35,15 +39,42 @@ const AVAILABLE_DOCUMENTS = [
   "Payslip / Salary Slip"
 ];
 
+const slideOverVariants = {
+  hidden: { x: "100%" },
+  visible: { x: 0, transition: { type: "spring" as const, stiffness: 320, damping: 30 } },
+  exit: { x: "100%", transition: { duration: 0.2, ease: "easeIn" as const } }
+};
+
 export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) => {
   const [loading, setLoading] = useState(true);
   const [jobs, setJobs] = useState<any[]>([]);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<any | null>(null);
+  const [aiPreScreening, setAiPreScreening] = useState<any[]>([]);
+  
+  const [assessmentData, setAssessmentData] = useState<{
+    preScreening: any[];
+    formalAssessment: any | null;
+    assessmentQuestions: any[];
+  }>({ preScreening: [], formalAssessment: null, assessmentQuestions: [] });
   
   // Dialog state
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Corporate Brand Sourcing states
+  const [companyProfile, setCompanyProfile] = useState<any>(null);
+  const [shareJob, setShareJob] = useState<any | null>(null);
+
+  useEffect(() => {
+    if (!companyId) return;
+    supabase
+      .from("companies")
+      .select("*")
+      .eq("id", companyId)
+      .maybeSingle()
+      .then(({ data }) => setCompanyProfile(data));
+  }, [companyId]);
 
   // Form state
   const [form, setForm] = useState({
@@ -85,7 +116,22 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
 
       const { data, error } = await query;
       if (error) throw error;
-      setJobs(data || []);
+
+      const now = new Date();
+      const loaded = data || [];
+
+      // Auto-deactivate any job whose deadline has passed but is still marked active
+      const expiredIds = loaded
+        .filter((j) => j.is_active && j.application_deadline && new Date(j.application_deadline) < now)
+        .map((j) => j.id);
+
+      if (expiredIds.length > 0) {
+        await supabase.from("jobs").update({ is_active: false }).in("id", expiredIds);
+        // Reflect change locally without a second fetch
+        loaded.forEach((j) => { if (expiredIds.includes(j.id)) j.is_active = false; });
+      }
+
+      setJobs(loaded);
     } catch (err: any) {
       console.error("Error loading jobs:", err.message);
       toast.error("Failed to load jobs.");
@@ -96,7 +142,68 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
 
   useEffect(() => {
     loadJobs();
-  }, [companyId, userId]);
+
+    // Listen to local AI actions dispatch
+    const handleLocalRefresh = () => {
+      loadJobs();
+    };
+
+    const handleAIPopulate = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      if (customEvent.detail) {
+        const details = customEvent.detail;
+        setEditingJob(null);
+        setForm({
+          title: details.title || "",
+          company: companyName || "",
+          location: details.location || "Gaborone, Botswana",
+          industry: details.industry || "",
+          job_type: details.job_type || details.employment_type || "Full-time",
+          employment_type: details.employment_type || details.job_type || "Full-time",
+          salary_range: details.salary_range || "",
+          description: details.description || "",
+          skills: details.skills || "",
+          application_email: "",
+          hiring_contact_name: "",
+          hiring_contact_title: "",
+          required_years_experience: details.required_years_experience || "",
+          required_qualification: details.required_qualification || "",
+          application_deadline: "",
+          required_documents: [] as string[],
+        });
+
+        if (details.pre_screening && Array.isArray(details.pre_screening)) {
+          const mapped = details.pre_screening.map((q: any) => ({
+            question_text: q.question_text,
+            question_type: q.question_type || "short_text",
+            options: q.options || null,
+            is_required: q.is_required !== false,
+            is_disqualifying: !!q.is_disqualifying,
+            correct_answer: q.correct_answer || null,
+          }));
+          setAiPreScreening(mapped);
+          setAssessmentData({
+            preScreening: mapped,
+            formalAssessment: null,
+            assessmentQuestions: [],
+          });
+        } else {
+          setAiPreScreening([]);
+          setAssessmentData({ preScreening: [], formalAssessment: null, assessmentQuestions: [] });
+        }
+
+        setIsPanelOpen(true);
+      }
+    };
+
+    window.addEventListener("refresh-recruitment-data", handleLocalRefresh);
+    window.addEventListener("ai-populate-job-form", handleAIPopulate);
+
+    return () => {
+      window.removeEventListener("refresh-recruitment-data", handleLocalRefresh);
+      window.removeEventListener("ai-populate-job-form", handleAIPopulate);
+    };
+  }, [companyId, userId, companyName]);
 
   const resetForm = () => {
     setForm({
@@ -118,6 +225,8 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
       required_documents: [],
     });
     setEditingJob(null);
+    setAiPreScreening([]);
+    setAssessmentData({ preScreening: [], formalAssessment: null, assessmentQuestions: [] });
   };
 
   const handleOpenCreatePanel = () => {
@@ -195,6 +304,23 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
     }
   };
 
+  const handleApproveJob = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from("jobs")
+        .update({ status: "approved", is_active: true })
+        .eq("id", id);
+      if (error) throw error;
+      
+      setJobs((prev) =>
+        prev.map((j) => (j.id === id ? { ...j, status: "approved", is_active: true } : j))
+      );
+      toast.success("Job approved successfully!");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to approve job.");
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.title || !form.location || !form.industry || !form.description || !form.application_deadline) {
@@ -226,21 +352,104 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
         required_documents: form.required_documents,
       };
 
+      let targetJobId = "";
       if (editingJob) {
+        targetJobId = editingJob.id;
         const { error } = await supabase
           .from("jobs")
           .update(payload)
-          .eq("id", editingJob.id);
+          .eq("id", targetJobId);
         if (error) throw error;
         toast.success("Job successfully updated!");
       } else {
         payload.posted_by = userId;
-        payload.is_active = true;
-        const { error } = await supabase
+        if (role === "recruiter") {
+          payload.is_active = false;
+          payload.status = "pending_approval";
+        } else {
+          payload.is_active = true;
+          payload.status = "approved";
+        }
+        const { data: newJob, error } = await supabase
           .from("jobs")
-          .insert([payload]);
+          .insert([payload])
+          .select()
+          .single();
         if (error) throw error;
-        toast.success("Job successfully posted!");
+        targetJobId = newJob.id;
+        if (role === "recruiter") {
+          toast.success("Job successfully submitted for approval!");
+        } else {
+          toast.success("Job successfully posted!");
+          setShareJob(newJob);
+        }
+      }
+
+      // 1. Save Pre-Screening Questions
+      const { error: delPsErr } = await supabase
+        .from("pre_screening_questions")
+        .delete()
+        .eq("job_id", targetJobId);
+      if (delPsErr) throw delPsErr;
+
+      if (assessmentData.preScreening.length > 0) {
+        const psInsert = assessmentData.preScreening.map((q) => ({
+          job_id: targetJobId,
+          question_text: q.question_text,
+          question_type: q.question_type,
+          options: q.options,
+          is_required: q.is_required,
+          is_disqualifying: q.is_disqualifying,
+          correct_answer: q.correct_answer,
+        }));
+        const { error: psErr } = await supabase.from("pre_screening_questions").insert(psInsert);
+        if (psErr) throw psErr;
+      }
+
+      // 2. Save Formal Assessment Config
+      if (assessmentData.formalAssessment) {
+        const { data: assess, error: assessErr } = await supabase
+          .from("assessments")
+          .upsert({
+            job_id: targetJobId,
+            name: assessmentData.formalAssessment.name,
+            attempts_allowed: assessmentData.formalAssessment.attempts_allowed,
+            is_live_timed: assessmentData.formalAssessment.is_live_timed,
+            deadline_days: assessmentData.formalAssessment.deadline_days,
+            auto_send: assessmentData.formalAssessment.auto_send,
+          }, { onConflict: "job_id" })
+          .select()
+          .single();
+
+        if (assessErr) throw assessErr;
+
+        // Save Formal Assessment Questions
+        const { error: delQErr } = await supabase
+          .from("assessment_questions")
+          .delete()
+          .eq("assessment_id", assess.id);
+        if (delQErr) throw delQErr;
+
+        if (assessmentData.assessmentQuestions.length > 0) {
+          const qInsert = assessmentData.assessmentQuestions.map((q, idx) => ({
+            assessment_id: assess.id,
+            question_text: q.question_text || (q.question_type === "iq_aptitude" ? "Cognitive Aptitude Test" : ""),
+            question_type: q.question_type,
+            order_index: idx,
+            options: q.options,
+            correct_answers: q.correct_answers,
+            video_max_duration: q.video_max_duration,
+            iq_difficulty: q.iq_difficulty,
+            iq_count: q.iq_count,
+            iq_source: q.iq_source,
+            time_limit_seconds: q.time_limit_seconds,
+          }));
+          const { error: qErr } = await supabase.from("assessment_questions").insert(qInsert);
+          if (qErr) throw qErr;
+        }
+      } else {
+        // Delete assessment if disabled
+        await supabase.from("assessments").delete().eq("job_id", targetJobId);
       }
 
       setIsPanelOpen(false);
@@ -266,11 +475,9 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
             Manage your company's job postings and monitor applicant volume.
           </p>
         </div>
-        {!isRecruiter && (
-          <Button onClick={handleOpenCreatePanel} className="bg-primary hover:bg-primary/95 text-primary-foreground flex items-center gap-2 rounded-xl">
-            <Plus className="w-4 h-4" /> Post New Job
-          </Button>
-        )}
+        <Button onClick={handleOpenCreatePanel} className="bg-primary hover:bg-primary/95 text-primary-foreground flex items-center gap-2 rounded-xl">
+          <Plus className="w-4 h-4" /> Post New Job
+        </Button>
       </div>
 
       {/* Jobs Table */}
@@ -285,11 +492,9 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
           <Briefcase className="w-12 h-12 text-white/10 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-white mb-1">No Jobs Found</h3>
           <p className="text-sm text-muted-foreground mb-4">You haven't posted any job openings yet.</p>
-          {!isRecruiter && (
-            <Button onClick={handleOpenCreatePanel} variant="outline" className="border-white/10 hover:bg-white/5 text-white">
-              Create First Job
-            </Button>
-          )}
+          <Button onClick={handleOpenCreatePanel} variant="outline" className="border-white/10 hover:bg-white/5 text-white">
+            Create First Job
+          </Button>
         </div>
       ) : (
         <div className="bg-[#0d1117] border border-white/5 rounded-2xl overflow-hidden shadow-xl">
@@ -311,6 +516,16 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
                     <td className="px-6 py-4">
                       <p className="text-sm font-semibold text-white">{job.title}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">{job.industry} • {job.location}</p>
+                      <button
+                        onClick={() => {
+                          const link = `${window.location.origin}/jobs/${job.id}/apply`;
+                          navigator.clipboard.writeText(link);
+                          toast.success("Public application link copied!");
+                        }}
+                        className="flex items-center gap-1 text-[10px] text-primary hover:text-primary/80 font-bold mt-1.5 cursor-pointer bg-primary/10 border border-primary/20 px-2 py-0.5 rounded-md w-fit hover:bg-primary/20 transition-all"
+                      >
+                        <Link2 className="w-3 h-3" /> Copy Public Link
+                      </button>
                     </td>
                     <td className="px-6 py-4 text-sm text-white/80">
                       <div className="flex items-center gap-1.5">
@@ -324,32 +539,79 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
                         {job.applications?.length || 0}
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-sm text-white/80">
-                      <div className="flex items-center gap-1.5">
-                        <Calendar className="w-4 h-4 text-muted-foreground" />
-                        {job.application_deadline ? new Date(job.application_deadline).toLocaleDateString() : "No deadline"}
-                      </div>
+                    <td className="px-6 py-4 text-sm">
+                      {(() => {
+                        const isExpired = job.application_deadline && new Date(job.application_deadline) < new Date();
+                        return (
+                          <div className={`flex items-center gap-1.5 ${isExpired ? "text-red-400" : "text-white/80"}`}>
+                            <Calendar className={`w-4 h-4 ${isExpired ? "text-red-400" : "text-muted-foreground"}`} />
+                            {job.application_deadline
+                              ? new Date(job.application_deadline).toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" })
+                              : "No deadline"}
+                            {isExpired && <span className="text-[10px] font-bold text-red-400">(Closed)</span>}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="px-6 py-4">
-                      <button
-                        onClick={() => !isRecruiter && toggleJobActive(job.id, job.is_active)}
-                        disabled={isRecruiter}
-                        className={`focus:outline-none flex items-center transition-opacity ${isRecruiter ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer hover:opacity-90'}`}
-                      >
-                        {job.is_active ? (
-                          <span className="flex items-center gap-1 text-xs font-semibold text-primary bg-primary/10 border border-primary/20 px-2 py-0.5 rounded-full">
-                            Active
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-1 text-xs font-semibold text-muted-foreground bg-white/5 border border-white/10 px-2 py-0.5 rounded-full">
-                            Inactive
-                          </span>
-                        )}
-                      </button>
+                      {(() => {
+                        const isExpired = job.application_deadline && new Date(job.application_deadline) < new Date();
+                        if (isExpired) {
+                          return (
+                            <span className="flex items-center gap-1 text-xs font-semibold text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full w-fit">
+                              Expired
+                            </span>
+                          );
+                        }
+                        if (job.status === "pending_approval") {
+                          return (
+                            <div className="flex items-center gap-2">
+                              <span className="flex items-center gap-1 text-xs font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full w-fit">
+                                Pending Approval
+                              </span>
+                              {(role === "admin" || role === "hiring_manager") && (
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleApproveJob(job.id)}
+                                  className="h-7 text-xs bg-forest hover:bg-forest/90 text-white rounded-lg px-2.5"
+                                >
+                                  Approve
+                                </Button>
+                              )}
+                            </div>
+                          );
+                        }
+                        return (
+                          <button
+                            onClick={() => !isRecruiter && toggleJobActive(job.id, job.is_active)}
+                            disabled={isRecruiter}
+                            className={`focus:outline-none flex items-center transition-opacity ${isRecruiter ? "opacity-70 cursor-not-allowed" : "cursor-pointer hover:opacity-90"}`}
+                          >
+                            {job.is_active ? (
+                              <span className="flex items-center gap-1 text-xs font-semibold text-primary bg-primary/10 border border-primary/20 px-2 py-0.5 rounded-full">
+                                Active
+                              </span>
+                            ) : (
+                              <span className="flex items-center gap-1 text-xs font-semibold text-muted-foreground bg-white/5 border border-white/10 px-2 py-0.5 rounded-full">
+                                Inactive
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })()}
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex justify-end gap-2">
-                        {!isRecruiter && (
+                        <Button
+                          onClick={() => setShareJob(job)}
+                          variant="ghost"
+                          size="icon"
+                          className="w-8 h-8 rounded-lg hover:bg-primary/10 text-primary"
+                          title="Generate Sourcing Graphic"
+                        >
+                          <ImageIcon className="w-4 h-4" />
+                        </Button>
+                        {(role === 'admin' || role === 'hiring_manager' || (isRecruiter && job.status === 'pending_approval')) && (
                           <Button
                             onClick={() => handleOpenEditPanel(job)}
                             variant="ghost"
@@ -380,9 +642,22 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
       )}
 
       {/* Slide-over panel for Create/Edit Job */}
-      {isPanelOpen && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm">
-          <div className="w-full max-w-2xl bg-[#0a0c10] border-l border-white/5 h-full flex flex-col shadow-2xl animate-in slide-in-from-right duration-250">
+      <AnimatePresence>
+        {isPanelOpen && (
+          <motion.div
+            className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm"
+            variants={modalOverlayVariants}
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+          >
+            <motion.div
+              className="w-full max-w-2xl bg-[#0a0c10] border-l border-white/5 h-full flex flex-col shadow-2xl"
+              variants={slideOverVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+            >
             {/* Header */}
             <div className="h-16 px-6 border-b border-white/5 flex items-center justify-between shrink-0">
               <h2 className="text-lg font-semibold text-white">
@@ -579,6 +854,16 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
                 </div>
               </div>
 
+              {/* Assessment and pre-screening builder section */}
+              <CoAssessmentBuilder
+                jobId={editingJob ? editingJob.id : null}
+                jobTitle={form.title}
+                jobDescription={form.description}
+                jobSkills={form.skills}
+                onSave={setAssessmentData}
+                initialPreScreening={aiPreScreening}
+              />
+
               <div className="pt-4 flex gap-4">
                 <Button
                   type="button"
@@ -597,44 +882,68 @@ export const CoJobs = ({ companyId, userId, role, companyName }: CoJobsProps) =>
                 </Button>
               </div>
             </form>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       )}
+    </AnimatePresence>
 
       {/* Delete Confirmation Alert */}
-      {deleteConfirmId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md bg-[#0d1117] border border-white/5 rounded-2xl p-6 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
-            <div className="flex gap-3 items-start">
-              <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center text-red-400 shrink-0">
-                <AlertTriangle className="w-5 h-5" />
+      <AnimatePresence>
+        {deleteConfirmId && (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+            variants={modalOverlayVariants}
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+          >
+            <motion.div
+              className="w-full max-w-md bg-[#0d1117] border border-white/5 rounded-2xl p-6 shadow-2xl space-y-4"
+              variants={modalContentVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+            >
+              <div className="flex gap-3 items-start">
+                <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center text-red-400 shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Delete Job Posting?</h3>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Are you sure you want to delete this job posting? This will remove all associated statistics and database links. This action cannot be undone.
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-lg font-bold text-white">Delete Job Posting?</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Are you sure you want to delete this job posting? This will remove all associated statistics and database links. This action cannot be undone.
-                </p>
+              <div className="flex justify-end gap-3 pt-2">
+                <Button
+                  onClick={() => setDeleteConfirmId(null)}
+                  variant="outline"
+                  disabled={busy}
+                  className="h-10 rounded-xl border-white/10 text-white hover:bg-white/5"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleDeleteJob}
+                  disabled={busy}
+                  className="h-10 rounded-xl bg-red-600 hover:bg-red-700 text-white border-none"
+                >
+                  {busy ? "Deleting..." : "Delete Job"}
+                </Button>
               </div>
-            </div>
-            <div className="flex justify-end gap-3 pt-2">
-              <Button
-                onClick={() => setDeleteConfirmId(null)}
-                variant="outline"
-                disabled={busy}
-                className="h-10 rounded-xl border-white/10 text-white hover:bg-white/5"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleDeleteJob}
-                disabled={busy}
-                className="h-10 rounded-xl bg-red-600 hover:bg-red-700 text-white border-none"
-              >
-                {busy ? "Deleting..." : "Delete Job"}
-              </Button>
-            </div>
-          </div>
-        </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {shareJob && (
+        <CoShareGraphicBuilder
+          isOpen={!!shareJob}
+          onClose={() => setShareJob(null)}
+          job={shareJob}
+          company={companyProfile}
+        />
       )}
     </div>
   );

@@ -5,14 +5,19 @@ import { useApp, computeMatch, Profile } from "@/context/AppContext";
 import { useAuth } from "@/context/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { Input } from "@/components/ui/input";
+import { motion } from "framer-motion";
+import { listContainerVariants, listItemVariants } from "@/lib/animations";
 
 const formatDeadline = (iso?: string | null): string | null => {
   if (!iso) return null;
-  const d = new Date(iso);
-  const days = Math.ceil((d.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-  if (days <= 0) return "Closes today";
+  const datePart = iso.substring(0, 10);
+  const deadlineDate = new Date(`${datePart}T23:59:59`);
+  const diffMs = deadlineDate.getTime() - Date.now();
+  if (diffMs < 0) return "Closed";
+  const days = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  if (days === 0) return "Closes today";
   if (days <= 7) return `${days}d left`;
-  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  return deadlineDate.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 };
 
 const AllJobs = () => {
@@ -48,44 +53,50 @@ const AllJobs = () => {
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by title, company, industry" className="pl-9 h-11 rounded-xl bg-card" />
       </div>
 
-      <div className="mt-4 space-y-2">
+      <motion.div
+        className="mt-4 space-y-2"
+        variants={listContainerVariants}
+        initial="hidden"
+        animate="visible"
+      >
         {sorted.length === 0 ? (
           <p className="text-center py-12 text-sm text-muted-foreground">No roles match your search.</p>
         ) : (
           sorted.map(({ job, match }) => {
             const deadline = formatDeadline(job.application_deadline);
             return (
-              <button
-                key={job.id}
-                onClick={() => navigate(`/review/${job.id}`)}
-                className="w-full bg-card rounded-2xl p-4 flex items-center gap-3 shadow-soft hover:shadow-card transition-shadow text-left"
-              >
-                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
-                  <Briefcase className="w-5 h-5 text-primary" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="font-semibold text-sm truncate flex-1">{job.title}</p>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
-                      match >= 75 ? "bg-success/15 text-success" : match >= 50 ? "bg-warning/15 text-warning" : "bg-muted text-muted-foreground"
-                    }`}>{match}%</span>
+              <motion.div key={job.id} variants={listItemVariants}>
+                <button
+                  onClick={() => navigate(`/review/${job.id}`)}
+                  className="w-full bg-card rounded-2xl p-4 flex items-center gap-3 shadow-soft hover:shadow-card transition-shadow text-left"
+                >
+                  <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+                    <Briefcase className="w-5 h-5 text-primary" />
                   </div>
-                  <p className="text-xs text-muted-foreground truncate">{job.company} · {job.location}</p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-[10px] text-primary font-medium">{job.employment_type || job.job_type}</span>
-                    {deadline && (
-                      <span className="text-[10px] text-warning flex items-center gap-0.5">
-                        <Calendar className="w-2.5 h-2.5" /> {deadline}
-                      </span>
-                    )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-semibold text-sm truncate flex-1">{job.title}</p>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                        match >= 75 ? "bg-success/15 text-success" : match >= 50 ? "bg-warning/15 text-warning" : "bg-muted text-muted-foreground"
+                      }`}>{match}%</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate">{job.company} · {job.location}</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-[10px] text-primary font-medium">{job.employment_type || job.job_type}</span>
+                      {deadline && (
+                        <span className="text-[10px] text-warning flex items-center gap-0.5">
+                          <Calendar className="w-2.5 h-2.5" /> {deadline}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-muted-foreground" />
-              </button>
+                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                </button>
+              </motion.div>
             );
           })
         )}
-      </div>
+      </motion.div>
     </div>
   );
 };

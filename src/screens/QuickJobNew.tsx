@@ -18,7 +18,7 @@ const PAY_TYPES = ["hourly", "fixed"];
 const schema = z.object({
   title: z.string().trim().min(2).max(120),
   category: z.string().min(2),
-  description: z.string().trim().min(5).max(800),
+  description: z.string().trim().min(20, "Please provide a more detailed description (at least 20 characters) so candidates and admins understand the gig.").max(800),
   pay_amount: z.coerce.number().min(0),
   pay_type: z.string(),
   location: z.string().trim().min(2).max(120),

@@ -94,8 +94,8 @@ const Auth = () => {
           } else if (profileData?.account_type === "employer") {
             navigate("/employer");
           } else if (profileData?.account_type === "quick_jobs") {
-            // Job posters land on their alerts/post page, not the candidate swipe feed
-            navigate("/notifications");
+            // Job posters land on their dashboard, not the candidate swipe feed
+            navigate("/quick-jobs");
           } else {
             navigate("/swipe");
           }

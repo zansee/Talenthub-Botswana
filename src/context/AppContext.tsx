@@ -36,7 +36,7 @@ export type Profile = {
 };
 
 export type Swipe = { job_id: string; action: "like" | "save" | "pass" };
-export type Application = { job_id: string; status: "draft" | "submitted"; cover_letter: string | null; merged_pdf_path?: string | null };
+export type Application = { id: string; job_id: string; status: string; cover_letter: string | null; merged_pdf_path?: string | null };
 
 type Ctx = {
   jobs: Job[];           // unfiltered (all active)
@@ -130,14 +130,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (!user) { setJobs([]); setSwipeJobs([]); setProfile(null); setSwipes([]); setApplications([]); setLoading(false); return; }
     setLoading(true);
     const [jobsRes, swipesRes, appsRes, profRes] = await Promise.all([
-      supabase.from("jobs").select("*").eq("is_active", true).order("created_at", { ascending: false }),
+      supabase.from("jobs").select("*").eq("is_active", true).or("status.eq.approved,status.is.null").order("created_at", { ascending: false }),
       supabase.from("swipes").select("job_id,action").eq("user_id", user.id),
-      supabase.from("applications").select("job_id,status,cover_letter,merged_pdf_path").eq("user_id", user.id),
+      supabase.from("applications").select("id,job_id,status,cover_letter,merged_pdf_path").eq("user_id", user.id),
       supabase.from("profiles").select("*").eq("id", user.id).maybeSingle(),
     ]);
-    const allJobs = ((jobsRes.data ?? []) as Job[]).filter((j) =>
-      !j.application_deadline || new Date(j.application_deadline) > new Date()
-    );
+    const allJobs = ((jobsRes.data ?? []) as Job[]).filter((j) => {
+      if (!j.application_deadline) return true;
+      const datePart = j.application_deadline.substring(0, 10);
+      const deadlineDate = new Date(`${datePart}T23:59:59`);
+      return deadlineDate >= new Date();
+    });
     const prof = (profRes.data ?? null) as Profile | null;
     setProfile(prof);
     setJobs(allJobs);
@@ -200,13 +203,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (!user) return;
     const submitted_at = status === "submitted" ? new Date().toISOString() : null;
     await supabase.from("applications").upsert(
-      { user_id: user.id, job_id: jobId, cover_letter: coverLetter, status, submitted_at, merged_pdf_path: mergedPdfPath },
+      { user_id: user.id, job_id: jobId, cover_letter: coverLetter, status: status as any, submitted_at, merged_pdf_path: mergedPdfPath },
       { onConflict: "user_id,job_id" }
     );
-    setApplications((a) => [
-      ...a.filter((x) => x.job_id !== jobId),
-      { job_id: jobId, status, cover_letter: coverLetter, merged_pdf_path: mergedPdfPath },
-    ]);
+    setApplications((a) => {
+      const existing = a.find((x) => x.job_id === jobId);
+      return [
+        ...a.filter((x) => x.job_id !== jobId),
+        { id: existing?.id || jobId, job_id: jobId, status, cover_letter: coverLetter, merged_pdf_path: mergedPdfPath },
+      ];
+    });
     if (status === "submitted") {
       await supabase.from("notifications").delete()
         .eq("user_id", user.id).eq("type", "draft_reminder").eq("job_id", jobId);

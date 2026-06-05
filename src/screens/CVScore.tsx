@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, ArrowRight, Sparkles, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
 import mascot from "@/assets/mascot-transparent.png";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import { AtsBreakdown } from "@/lib/atsScore";
 import { toast } from "sonner";
+import { useCountUp } from "@/hooks/useCountUp";
+import { AnimatedProgress } from "@/components/AnimatedProgress";
 
 const PASS = 80;
 
@@ -154,6 +155,33 @@ const CVScore = () => {
   const ringColor = passed ? "text-success" : result.score >= 60 ? "text-warning" : "text-destructive";
 
   return (
+    <ScoreContent
+      result={result}
+      passed={passed}
+      ringColor={ringColor}
+      navigate={navigate}
+      user={user}
+    />
+  );
+};
+
+// Separate inner component so hooks (useCountUp) run only after result is available
+const ScoreContent = ({
+  result,
+  passed,
+  ringColor,
+  navigate,
+  user,
+}: {
+  result: AtsBreakdown;
+  passed: boolean;
+  ringColor: string;
+  navigate: ReturnType<typeof useNavigate>;
+  user: any;
+}) => {
+  const animatedScore = useCountUp(result.score, 1000, 200);
+
+  return (
     <div className="flex-1 flex flex-col bg-background overflow-y-auto">
       <div className="p-5 flex items-center gap-3">
         <button onClick={() => navigate(-1)} className="w-9 h-9 rounded-full bg-secondary flex items-center justify-center">
@@ -194,7 +222,7 @@ const CVScore = () => {
             />
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <span className="text-4xl font-bold">{result.score}%</span>
+            <span className="text-4xl font-bold">{animatedScore}%</span>
             <span className="text-[10px] text-muted-foreground uppercase tracking-wider">ATS Score</span>
           </div>
         </div>
@@ -255,7 +283,7 @@ const Bar = ({ label, value }: { label: string; value: number }) => (
       <span className="text-muted-foreground">{label}</span>
       <span className="font-semibold">{value}%</span>
     </div>
-    <Progress value={value} className="h-2" />
+    <AnimatedProgress value={value} delay={200} className="h-2" barClassName="" />
   </div>
 );
 

@@ -7,15 +7,19 @@ import { Heart, X, Undo2, Bookmark, MapPin, Briefcase, Clock, GraduationCap, Cal
 import { Button } from "@/components/ui/button";
 import { industryImageUrl } from "@/lib/industryImage";
 import { supabase } from "@/integrations/supabase/client";
+import { useCountUp } from "@/hooks/useCountUp";
 
 const formatDeadline = (iso?: string | null): string | null => {
   if (!iso) return null;
-  const d = new Date(iso);
-  const days = Math.ceil((d.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-  if (days <= 0) return "Closes today";
+  const datePart = iso.substring(0, 10);
+  const deadlineDate = new Date(`${datePart}T23:59:59`);
+  const diffMs = deadlineDate.getTime() - Date.now();
+  if (diffMs < 0) return "Closed";
+  const days = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  if (days === 0) return "Closes today";
   if (days === 1) return "Closes tomorrow";
   if (days <= 7) return `Closes in ${days} days`;
-  return `Apply by ${d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+  return `Apply by ${deadlineDate.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
 };
 
 const SwipeCard = forwardRef<HTMLDivElement, { job: Job; match: number; onSwipe: (a: "pass" | "like" | "save") => void; isTop: boolean; }>(({
@@ -29,10 +33,14 @@ const SwipeCard = forwardRef<HTMLDivElement, { job: Job; match: number; onSwipe:
   const saveOpacity = useTransform(y, [-120, 0], [1, 0]);
 
   const handleDragEnd = (_: unknown, info: PanInfo) => {
-    if (info.offset.x > 100) onSwipe("like");
-    else if (info.offset.x < -100) onSwipe("pass");
-    else if (info.offset.y < -100) onSwipe("save");
+    const velX = info.velocity.x;
+    const velY = info.velocity.y;
+    if (info.offset.x > 100 || velX > 500) onSwipe("like");
+    else if (info.offset.x < -100 || velX < -500) onSwipe("pass");
+    else if (info.offset.y < -100 || velY < -500) onSwipe("save");
   };
+
+  const animatedMatch = useCountUp(match, 600, 100);
 
   const deadline = formatDeadline(job.application_deadline);
   const employment = job.employment_type || job.job_type;
@@ -44,7 +52,7 @@ const SwipeCard = forwardRef<HTMLDivElement, { job: Job; match: number; onSwipe:
       drag={isTop ? "x" : false}
       dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
       dragElastic={0.7}
-      style={{ x, rotate, touchAction: "pan-y" }}
+      style={{ x, rotate, touchAction: "none" }}
       onDragEnd={handleDragEnd}
       whileTap={{ cursor: "grabbing" }}
       className="absolute inset-0 cursor-grab active:cursor-grabbing select-none"
@@ -62,7 +70,7 @@ const SwipeCard = forwardRef<HTMLDivElement, { job: Job; match: number; onSwipe:
             onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
           />
           <div className="absolute top-3 right-3 bg-background text-foreground rounded-full px-3 py-1 text-xs font-bold shadow-soft">
-            {match}% Match
+            {animatedMatch}% Match
           </div>
           {deadline && (
             <div className="absolute bottom-3 right-3 bg-warning text-warning-foreground rounded-full px-3 py-1 text-[11px] font-semibold flex items-center gap-1 shadow-soft">
@@ -117,7 +125,7 @@ const Swipe = () => {
   const navigate = useNavigate();
   const { isAdmin } = useAuth();
   const { user } = useAuth();
-  const { swipeJobs, jobs: allJobs, swipes, swipe, undo, loading, profile } = useApp();
+  const { swipeJobs, jobs: allJobs, swipes, swipe, undo, loading, profile, applications } = useApp();
   const [subscriptionStatus, setSubscriptionStatus] = useState<string | null>(null);
 
   useEffect(() => {
@@ -126,7 +134,10 @@ const Swipe = () => {
       .then(({ data }) => setSubscriptionStatus(data?.subscription_status ?? "free"));
   }, [user]);
 
-  const seen = new Set(swipes.map((s) => s.job_id));
+  const seen = new Set([
+    ...swipes.map((s) => s.job_id),
+    ...applications.map((a) => a.job_id)
+  ]);
   const usingFallback = swipeJobs.length === 0 && allJobs.length > 0;
   const sourceJobs = usingFallback ? allJobs : swipeJobs;
   const remaining = sourceJobs.filter((j) => !seen.has(j.id));

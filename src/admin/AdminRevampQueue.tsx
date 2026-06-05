@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Sparkles, Loader2, Download, Upload, CheckCircle2 } from "lucide-react";
+import { Gem, Loader2, Download, Upload, CheckCircle2 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
@@ -110,7 +110,8 @@ const AdminRevampQueue = () => {
   const downloadMergedFile = async (
     cvPath: string | null,
     attachmentPaths: string[] | null,
-    outputFilename: string = "merged_documents.pdf"
+    outputFilename: string = "merged_documents.pdf",
+    attachmentBucket: string = "app-docs"
   ) => {
     const loadingToast = toast.loading("Downloading and merging documents...");
     try {
@@ -136,7 +137,7 @@ const AdminRevampQueue = () => {
       // 2. Fetch Attachments
       if (attachmentPaths && attachmentPaths.length > 0) {
         for (const path of attachmentPaths) {
-          const { data, error } = await supabase.storage.from("app-docs").download(path);
+          const { data, error } = await supabase.storage.from(attachmentBucket).download(path);
           if (error || !data) {
             console.warn("Could not download attachment file", path, error);
             continue;
@@ -192,7 +193,7 @@ const AdminRevampQueue = () => {
   return (
     <div className="p-6">
       <div className="flex items-center gap-2 mb-6">
-        <Sparkles className="w-5 h-5 text-primary" />
+        <Gem className="w-5 h-5 text-primary" />
         <h1 className="text-2xl font-bold">CV Revamp Queue</h1>
       </div>
 
@@ -234,7 +235,7 @@ const AdminRevampQueue = () => {
                 </Button>
               )}
               {r.additional_attachment_paths && r.additional_attachment_paths.length > 0 && (
-                <Button variant="outline" size="sm" className="mt-3 mr-2 border-amber-500/40 text-amber-400 hover:bg-amber-500/10" onClick={() => downloadMergedFile(null, r.additional_attachment_paths, `Additional_Docs_CVR-${r.id.substring(0,4).toUpperCase()}.pdf`)}>
+                <Button variant="outline" size="sm" className="mt-3 mr-2 border-amber-500/40 text-amber-400 hover:bg-amber-500/10" onClick={() => downloadMergedFile(null, r.additional_attachment_paths, `Additional_Docs_CVR-${r.id.substring(0,4).toUpperCase()}.pdf`, "revamp-documents")}>
                   <Download className="w-3.5 h-3.5 mr-1.5" /> Get Additional Docs (Merged)
                 </Button>
               )}

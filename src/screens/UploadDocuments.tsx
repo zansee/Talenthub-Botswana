@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, Paperclip, X, CheckCircle2, Loader2, Download } from "lucide-react";
+import { ArrowLeft, Paperclip, X, CheckCircle2, Loader2, Download, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
@@ -18,6 +18,26 @@ const UploadDocuments = () => {
   const [existing, setExisting] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      setAttachments(p => [...p, ...Array.from(e.dataTransfer.files).map(f => ({ file: f }))]);
+    }
+  };
 
   useEffect(() => {
     if (!requestId || !user) return;
@@ -116,27 +136,61 @@ const UploadDocuments = () => {
           </div>
         )}
 
-        <div>
-          <p className="text-xs font-semibold text-muted-foreground uppercase mb-2">Add new documents</p>
+        <div className="space-y-4">
+          <p className="text-xs font-semibold text-muted-foreground uppercase">Add new documents</p>
           <input ref={fileRef} type="file" multiple className="hidden" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
             onChange={(e) => {
               if (!e.target.files) return;
               setAttachments(p => [...p, ...Array.from(e.target.files!).map(f => ({ file: f }))]);
               e.target.value = "";
             }} />
-          {attachments.map((a, i) => (
-            <div key={i} className="mb-2 flex items-center gap-3 bg-card border border-border rounded-xl p-3">
-              <Paperclip className="w-4 h-4 text-muted-foreground shrink-0" />
-              <p className="flex-1 text-xs truncate text-muted-foreground">{a.file.name}</p>
-              <button onClick={() => setAttachments(p => p.filter((_, j) => j !== i))} className="text-muted-foreground">
-                <X className="w-4 h-4" />
-              </button>
+
+          {/* Premium Glassmorphic Dropzone */}
+          <div
+            onDragEnter={handleDrag}
+            onDragOver={handleDrag}
+            onDragLeave={handleDrag}
+            onDrop={handleDrop}
+            onClick={() => fileRef.current?.click()}
+            className={`relative group cursor-pointer w-full py-8 px-4 border border-dashed rounded-2xl flex flex-col items-center justify-center gap-2 text-center transition-all duration-300 ${
+              dragActive
+                ? "border-primary bg-primary/10 scale-[0.99] shadow-inner shadow-primary/10"
+                : "border-border hover:border-primary/50 bg-secondary/30 hover:bg-secondary/40"
+            }`}
+          >
+            <div className={`w-12 h-12 rounded-full flex items-center justify-center transition-transform duration-300 group-hover:scale-110 ${
+              dragActive ? "bg-primary/20 text-primary" : "bg-primary/10 text-primary"
+            }`}>
+              <Upload className="w-5 h-5" />
             </div>
-          ))}
-          <button onClick={() => fileRef.current?.click()}
-            className="w-full text-xs text-primary border border-dashed border-border rounded-xl py-3 flex items-center justify-center gap-2">
-            <Paperclip className="w-3.5 h-3.5" /> Attach documents
-          </button>
+            <div className="space-y-1">
+              <p className="text-xs font-semibold text-white/90">
+                Drag & drop files here or <span className="text-primary hover:underline">browse</span>
+              </p>
+              <p className="text-[10px] text-muted-foreground">
+                Supports PDF, DOC, DOCX, PNG, JPG, JPEG (Max 10MB)
+              </p>
+            </div>
+          </div>
+
+          {/* Preview list */}
+          {attachments.length > 0 && (
+            <div className="space-y-2 pt-2">
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Pending Uploads ({attachments.length})</p>
+              {attachments.map((a, i) => (
+                <div key={i} className="flex items-center gap-3 bg-secondary/20 border border-border/50 rounded-xl p-3 animate-fade-in transition-all">
+                  <Paperclip className="w-4 h-4 text-primary shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium truncate text-white/90">{a.file.name}</p>
+                    <p className="text-[9px] text-muted-foreground">{(a.file.size / 1024).toFixed(0)} KB</p>
+                  </div>
+                  <button onClick={(e) => { e.stopPropagation(); setAttachments(p => p.filter((_, j) => j !== i)); }} className="w-7 h-7 rounded-lg bg-destructive/10 hover:bg-destructive/20 text-destructive flex items-center justify-center transition-colors">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

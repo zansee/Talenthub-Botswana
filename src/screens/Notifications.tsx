@@ -4,6 +4,9 @@ import { Bell, Briefcase, FileText, Check, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
+import { motion } from "framer-motion";
+import { listContainerVariants, listItemVariants } from "@/lib/animations";
+import { SkeletonNotification } from "@/components/Skeleton";
 
 type Notification = {
   id: string;
@@ -67,10 +70,14 @@ const Notifications = () => {
 
   const tap = (n: Notification) => {
     markRead(n.id);
-    if (n.type === "new_match" && n.job_id) navigate(`/review/${n.job_id}`);
+    if (n.type === "quick_job_interest" && n.job_id) {
+      navigate("/quick-jobs", { state: { expandJobId: n.job_id } });
+    }
+    else if (n.type === "new_match" && n.job_id) navigate(`/review/${n.job_id}`);
     else if (n.type === "draft_reminder" && n.job_id) navigate(`/review/${n.job_id}`);
     else if (n.type === "prep" || n.type === "interview_prep") navigate("/delivered-services");
-    else if (n.type === "docs_requested" || n.type === "revamp_status" || n.type === "revamp") navigate("/cv-revamp");
+    else if (n.type === "revamp" || n.type === "docs_requested") navigate("/cv-documents");
+    else if (n.type === "revamp_status") navigate("/cv-revamp");
     else if (n.type === "application" || n.type === "job") navigate("/applications");
     else navigate("/profile");
   };
@@ -90,7 +97,12 @@ const Notifications = () => {
 
       <div className="mt-5 space-y-2">
         {loading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <>
+            <SkeletonNotification />
+            <SkeletonNotification />
+            <SkeletonNotification />
+            <SkeletonNotification />
+          </>
         ) : items.length === 0 ? (
           <div className="text-center py-16 text-muted-foreground">
             <Bell className="w-10 h-10 mx-auto mb-3 opacity-40" />
@@ -98,42 +110,50 @@ const Notifications = () => {
             <p className="text-xs mt-1">We'll alert you when new jobs match your skills.</p>
           </div>
         ) : (
-          items.map((n) => {
-            const Icon = n.type === "new_match" ? Briefcase : FileText;
-            return (
-              <div
-                key={n.id}
-                className={`bg-card rounded-2xl p-3 flex items-start gap-3 shadow-soft border ${
-                  n.read ? "border-border opacity-70" : "border-primary/30"
-                }`}
-              >
-                <button onClick={() => tap(n)} className="flex-1 flex items-start gap-3 text-left">
-                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                    n.type === "new_match" ? "bg-primary/10 text-primary" : "bg-warning/10 text-warning"
-                  }`}>
-                    <Icon className="w-4 h-4" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-sm truncate">{n.title}</p>
-                    {n.body && <p className="text-xs text-muted-foreground truncate">{n.body}</p>}
-                    <p className="text-[10px] text-muted-foreground mt-1">
-                      {new Date(n.created_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
-                    </p>
-                  </div>
-                </button>
-                <div className="flex flex-col gap-1">
-                  {!n.read && (
-                    <button onClick={() => markRead(n.id)} className="w-7 h-7 rounded-lg bg-secondary flex items-center justify-center" title="Mark read">
-                      <Check className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                  <button onClick={() => remove(n.id)} className="w-7 h-7 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center" title="Delete">
-                    <Trash2 className="w-3.5 h-3.5" />
+          <motion.div
+            className="space-y-2"
+            variants={listContainerVariants}
+            initial="hidden"
+            animate="visible"
+          >
+            {items.map((n) => {
+              const Icon = n.type === "new_match" ? Briefcase : FileText;
+              return (
+                <motion.div
+                  key={n.id}
+                  variants={listItemVariants}
+                  className={`bg-card rounded-2xl p-3 flex items-start gap-3 shadow-soft border ${
+                    n.read ? "border-border opacity-70" : "border-primary/30"
+                  }`}
+                >
+                  <button onClick={() => tap(n)} className="flex-1 flex items-start gap-3 text-left min-w-0 w-full overflow-hidden">
+                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                      n.type === "new_match" ? "bg-primary/10 text-primary" : "bg-warning/10 text-warning"
+                    }`}>
+                      <Icon className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm leading-snug break-words">{n.title}</p>
+                      {n.body && <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed break-words whitespace-pre-wrap">{n.body}</p>}
+                      <p className="text-[10px] text-muted-foreground mt-1.5">
+                        {new Date(n.created_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}
+                      </p>
+                    </div>
                   </button>
-                </div>
-              </div>
-            );
-          })
+                  <div className="flex flex-col gap-1">
+                    {!n.read && (
+                      <button onClick={() => markRead(n.id)} className="w-7 h-7 rounded-lg bg-secondary flex items-center justify-center" title="Mark read">
+                        <Check className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <button onClick={() => remove(n.id)} className="w-7 h-7 rounded-lg bg-destructive/10 text-destructive flex items-center justify-center" title="Delete">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </motion.div>
         )}
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, FileText, Check, Edit3, Sparkles, Paperclip, X, Mail } from "lucide-react";
+import { ArrowLeft, FileText, Check, Edit3, Paperclip, X, Mail } from "lucide-react";
+import mascot from "@/assets/mascot-transparent.png";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -512,8 +513,8 @@ const sendChunk = () => {
 
         <div>
           <div className="flex items-center justify-between mb-2">
-            <p className="text-sm font-semibold flex items-center gap-1">
-              <Sparkles className="w-3.5 h-3.5 text-primary" /> AI Cover Letter
+            <p className="text-sm font-semibold flex items-center gap-1.5">
+              <img src={mascot} alt="Teemane" className="w-5 h-5 object-contain animate-bob" /> AI Cover Letter
             </p>
             <div className="flex items-center gap-3">
               <button
@@ -536,7 +537,7 @@ const sendChunk = () => {
             />
           ) : (
             <div className="bg-card rounded-2xl p-4 text-xs whitespace-pre-line leading-relaxed text-muted-foreground border border-border max-h-64 overflow-y-auto">
-              {generating ? "✨ Crafting your personalized letter…" : (coverLetter || "Tap Regenerate to create one")}
+              {generating ? "✨ Teemane is crafting your personalised letter…" : (coverLetter || "Tap Regenerate to create one")}
             </div>
           )}
         </div>

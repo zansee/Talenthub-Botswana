@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Bell, Shield, FileText, Sparkles, Trash2, Moon } from "lucide-react";
+import { ArrowLeft, Bell, Shield, FileText, Trash2, Moon } from "lucide-react";
+import mascot from "@/assets/mascot-transparent.png";
 import { useAuth } from "@/context/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { Switch } from "@/components/ui/switch";
@@ -10,11 +11,18 @@ import { applyTheme, getStoredTheme } from "@/lib/theme";
 import { useApp } from "@/context/AppContext";
 
 const THEMES = [
-  { id: "forest", name: "Forest", color: "bg-[#4f6448]" },
-  { id: "midnight", name: "Midnight", color: "bg-[#1e60a3]" },
-  { id: "sunset", name: "Sunset", color: "bg-[#db4e1d]" },
-  { id: "vaporwave", name: "Vaporwave", color: "bg-[#a61fed]" },
-  { id: "emerald", name: "Emerald", color: "bg-[#0b7a58]" },
+  { id: "forest",    name: "Forest",    color: "bg-[#4f6448]", hex: "#4f6448" },
+  { id: "midnight",  name: "Midnight",  color: "bg-[#1e60a3]", hex: "#1e60a3" },
+  { id: "sunset",    name: "Sunset",    color: "bg-[#db4e1d]", hex: "#db4e1d" },
+  { id: "vaporwave", name: "Vaporwave", color: "bg-[#a61fed]", hex: "#a61fed" },
+  { id: "emerald",   name: "Emerald",   color: "bg-[#0b7a58]", hex: "#0b7a58" },
+  { id: "rose",      name: "Rose",      color: "bg-[#e11d48]", hex: "#e11d48" },
+  { id: "amber",     name: "Amber",     color: "bg-[#d97706]", hex: "#d97706" },
+  { id: "indigo",    name: "Indigo",    color: "bg-[#4338ca]", hex: "#4338ca" },
+  { id: "teal",      name: "Teal",      color: "bg-[#0891b2]", hex: "#0891b2" },
+  { id: "coral",     name: "Coral",     color: "bg-[#f43f5e]", hex: "#f43f5e" },
+  { id: "slate",     name: "Slate",     color: "bg-[#475569]", hex: "#475569" },
+  { id: "gold",      name: "Gold",      color: "bg-[#b45309]", hex: "#b45309" },
 ];
 
 const NAV_STYLES = [
@@ -98,19 +106,24 @@ const Settings = () => {
           <div className="pt-4 border-t border-border">
             <p className="text-sm font-medium mb-1">Color Theme</p>
             <p className="text-[11px] text-muted-foreground mb-3">Choose how the app accents and card colors look</p>
-            <div className="flex items-center gap-3.5 flex-wrap">
+            <div className="grid grid-cols-6 gap-2">
               {THEMES.map((t) => (
                 <button
                   key={t.id}
                   onClick={() => setColorTheme(t.id)}
-                  className={`w-9 h-9 rounded-full ${t.color} relative flex items-center justify-center transition-all ${
-                    colorTheme === t.id ? "ring-2 ring-offset-2 ring-primary scale-110 shadow-md" : "hover:scale-105 opacity-80 hover:opacity-100"
-                  }`}
+                  className="flex flex-col items-center gap-1 group"
                   title={t.name}
                 >
-                  {colorTheme === t.id && (
-                    <div className="w-2.5 h-2.5 rounded-full bg-white shadow-sm" />
-                  )}
+                  <div className={`w-9 h-9 rounded-full ${t.color} relative flex items-center justify-center transition-all ${
+                    colorTheme === t.id ? "ring-2 ring-offset-2 ring-primary scale-110 shadow-md" : "hover:scale-105 opacity-75 hover:opacity-100"
+                  }`}>
+                    {colorTheme === t.id && (
+                      <div className="w-2.5 h-2.5 rounded-full bg-white shadow-sm" />
+                    )}
+                  </div>
+                  <span className={`text-[9px] font-semibold leading-none text-center transition-colors ${
+                    colorTheme === t.id ? "text-primary" : "text-muted-foreground group-hover:text-foreground"
+                  }`}>{t.name}</span>
                 </button>
               ))}
             </div>
@@ -145,7 +158,7 @@ const Settings = () => {
           </Row>
         </Section>
 
-        <Section title="AI & Data" icon={Sparkles}>
+        <Section title="AI & Data" icon={Shield} mascotImg={mascot}>
           <Row label="Allow AI processing" desc="Let us read your CV and personalize cover letters using AI">
             <Switch checked={aiConsent} onCheckedChange={toggleAi} />
           </Row>
@@ -177,10 +190,12 @@ const Settings = () => {
   );
 };
 
-const Section = ({ title, icon: Icon, children }: { title: string; icon: any; children: React.ReactNode }) => (
+const Section = ({ title, icon: Icon, children, mascotImg }: { title: string; icon: any; children: React.ReactNode; mascotImg?: string }) => (
   <div className="bg-card rounded-2xl p-4 shadow-soft">
     <div className="flex items-center gap-2 mb-3">
-      <Icon className="w-4 h-4 text-primary" />
+      {mascotImg
+        ? <img src={mascotImg} alt="Teemane" className="w-6 h-6 object-contain animate-bob" />
+        : <Icon className="w-4 h-4 text-primary" />}
       <h2 className="text-sm font-semibold">{title}</h2>
     </div>
     <div className="space-y-2 divide-y divide-border">{children}</div>

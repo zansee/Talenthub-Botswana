@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { z } from "zod";
-import { ArrowLeft, Plus, Trash2, Sparkles, Upload } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, ScanLine, FileUp, Upload } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useApp } from "@/context/AppContext";
 import { supabase } from "@/integrations/supabase/client";
@@ -179,7 +179,7 @@ const AdminJobs = () => {
         </div>
         {aiBanner && (
           <div className="rounded-xl bg-primary/10 border border-primary/30 px-3 py-2 text-xs text-primary flex items-center gap-2">
-            <Sparkles className="w-3.5 h-3.5" /> AI extracted — please review before saving
+            <ScanLine className="w-3.5 h-3.5" /> AI extracted - please review before saving
           </div>
         )}
         <Field label="Title" v={form.title} on={(v) => update("title", v)} />
@@ -303,7 +303,7 @@ const AdminJobs = () => {
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="rounded-2xl">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2"><Sparkles className="w-4 h-4 text-primary" /> Import job from document</DialogTitle>
+            <DialogTitle className="flex items-center gap-2"><FileUp className="w-4 h-4 text-primary" /> Import job from document</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <p className="text-muted-foreground">Upload a JPG, PNG or PDF of the job advert. AI will extract the details and pre-fill the form for review.</p>

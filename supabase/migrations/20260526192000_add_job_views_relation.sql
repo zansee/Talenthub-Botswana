@@ -1,4 +1,6 @@
 -- Add foreign key constraint to job_views.job_id linking to jobs.id
+ALTER TABLE public.job_views DROP CONSTRAINT IF EXISTS job_views_job_id_fkey;
+
 ALTER TABLE public.job_views 
   ADD CONSTRAINT job_views_job_id_fkey 
   FOREIGN KEY (job_id) 

@@ -26,7 +26,11 @@ export const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
       setChecking(false);
       return;
     }
-    if (EXEMPT.has(location.pathname)) { setChecking(false); return; }
+    if (EXEMPT.has(location.pathname)) {
+      setRedirect(null);
+      setChecking(false);
+      return;
+    }
 
     let cancelled = false;
 
@@ -51,14 +55,36 @@ export const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
       if ((data as any)?.account_type === "quick_jobs") {
         const quickJobsAllowed = ["/quick-jobs", "/profile", "/notifications", "/profile-setup", "/subscribe", "/privacy", "/settings"];
         const isAllowed = quickJobsAllowed.some(p => location.pathname === p || location.pathname.startsWith(p));
-        if (!isAllowed) setRedirect("/notifications");
+        if (!isAllowed) setRedirect("/quick-jobs");
         else setRedirect(null);
         setChecking(false);
         return;
       }
 
-      if (!data?.cv_path) { setRedirect("/upload-cv"); setChecking(false); return; }
-      if (!data.onboarding_complete) { setRedirect("/cv-score"); setChecking(false); return; }
+      let hasRevampBypass = false;
+      if (!data?.cv_path) {
+        const { data: revampReq } = await supabase
+          .from("revamp_requests")
+          .select("id, fulfilment_status")
+          .eq("user_id", user.id)
+          .neq("fulfilment_status", "cancelled")
+          .limit(1)
+          .maybeSingle();
+
+        if (revampReq) {
+          hasRevampBypass = true;
+        } else {
+          setRedirect("/upload-cv");
+          setChecking(false);
+          return;
+        }
+      }
+
+      if (!hasRevampBypass && !data?.onboarding_complete) {
+        setRedirect("/cv-score");
+        setChecking(false);
+        return;
+      }
 
       const { data: flag } = await supabase
         .from("feature_flags").select("enabled").eq("key", "subscription_required").maybeSingle();

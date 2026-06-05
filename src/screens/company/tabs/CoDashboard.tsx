@@ -170,11 +170,9 @@ export const CoDashboard = ({
 
       const formattedApplicants = recentApps.map((app) => {
         const fullName = profilesMap[app.user_id] || "Unknown Candidate";
-        const parts = fullName.split(" ");
-        const masked = `${parts[0]} ${parts.length > 1 ? parts[parts.length - 1][0] + "." : ""}`;
         return {
           id: app.id,
-          name: masked,
+          name: fullName,
           jobTitle: (app.jobs as any)?.title || "Unknown Job",
           status: app.status,
           date: new Date(app.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
@@ -200,7 +198,32 @@ export const CoDashboard = ({
     }
   };
 
-  useEffect(() => { loadDashboardData(); }, [companyId, userId]);
+  useEffect(() => {
+    loadDashboardData();
+
+    // Subscribe to applications table changes
+    const channel = supabase
+      .channel("co-dashboard-realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "applications" },
+        () => {
+          loadDashboardData();
+        }
+      )
+      .subscribe();
+
+    // Listen to local AI actions dispatch
+    const handleLocalRefresh = () => {
+      loadDashboardData();
+    };
+    window.addEventListener("refresh-recruitment-data", handleLocalRefresh);
+
+    return () => {
+      supabase.removeChannel(channel);
+      window.removeEventListener("refresh-recruitment-data", handleLocalRefresh);
+    };
+  }, [companyId, userId]);
 
   if (loading) {
     return (
